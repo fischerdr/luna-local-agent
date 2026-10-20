@@ -10,6 +10,7 @@ without asking first - system packages show the exact command and wait.
 
     --yes                take every default, ask nothing
     --backend X          lmstudio (default), llama, or skip
+    --llama              force llama.cpp install (implies --backend llama, downloads embedding + reranker models)
     --voice X            install (default), container, container_cuda,
                          url:http://host:port, or skip
     --gpu X              auto (default), cpu, cuda, rocm - for the voice server
@@ -847,6 +848,8 @@ def main():
                                  epilog=__doc__.split("\n\n", 2)[-1])
     ap.add_argument("--yes", "-y", action="store_true")
     ap.add_argument("--backend", choices=["lmstudio", "llama", "skip"])
+    ap.add_argument("--llama", action="store_true",
+                    help="force llama.cpp install (implies --backend llama, download embedding + reranker models)")
     ap.add_argument("--voice", choices=["install", "container", "container_cuda", "skip"],
                     default="install")
     ap.add_argument("--gpu", default="auto", choices=["auto", "cpu", "cuda", "rocm", "mps"])
@@ -854,6 +857,10 @@ def main():
     ap.add_argument("--no-system", action="store_true")
     ap.add_argument("--check", action="store_true")
     ARGS = ap.parse_args()
+
+    # --llama implies --backend llama and auto-downloads models
+    if ARGS.llama:
+        ARGS.backend = "llama"
 
     print(f"{P}Luna - local AI companion - installer{X}  {D}{ROOT}{X}")
     state = load_state()
@@ -878,6 +885,12 @@ def main():
                     extras.append(key)
     else:
         extras = [e for e in (EXTRAS if ARGS.extras == "all" else ARGS.extras.split(",")) if e in EXTRAS]
+
+    # --llama: auto-add embedding + reranker so the models download
+    if ARGS.llama:
+        for e in ("embeddings", "reranker"):
+            if e not in extras:
+                extras.append(e)
     state["extras"] = extras
 
     system_packages()
