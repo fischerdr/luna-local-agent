@@ -305,11 +305,7 @@ def system_packages():
     # evdev compiles against the headers of the Python the venv uses, which
     # isn't always the system's default python3 (Fedora 44 ships 3.14; the
     # venv may well be 3.12).
-    mm = f"{sys.version_info.major}.{sys.version_info.minor}"
-    if pm == "dnf":
-        wanted[f"python{mm}-devel"] = "building evdev"
-        wanted.pop("python3-devel", None)
-    elif pm == "apt-get":
+    if pm == "apt-get":
         wanted[f"python{mm}-dev"] = "building evdev"
         wanted[f"python{mm}-venv"] = "virtual environments"
         wanted.pop("python3-dev", None)
