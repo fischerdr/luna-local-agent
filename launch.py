@@ -275,30 +275,29 @@ def _container_voice_proc(mode):
                     content = (
                         "FROM nvidia/cuda:12.9.1-cudnn-runtime-ubuntu24.04\n"
                         "RUN apt-get update && apt-get install -y --no-install-recommends "
-                        "espeak-ng python3-pip && rm -rf /var/lib/apt/lists/*\n"
-                        "RUN pip install --no-cache-dir torch ctranslate2 kokoro>=0.9.4 "
-                        "numpy>=1.24 soundfile\n"
+                        "git espeak-ng python3-pip && rm -rf /var/lib/apt/lists/* && rm -f /usr/lib/python3.12/EXTERNALLY-MANAGED 2>/dev/null; true\n"
+                        "RUN git clone --depth 1 https://github.com/fswolf/kokoro-reader.git /opt/kokoro-reader\n"
+                        "RUN pip install --no-cache-dir --break-system-packages torch "
+                        "ctranslate2 kokoro>=0.9.4 numpy>=1.24 soundfile\n"
                         "WORKDIR /opt/kokoro-reader/server\n"
                         "ENV KOKORO_HOST=0.0.0.0 KOKORO_PORT=8899 KOKORO_LANG=a "
                         "KOKORO_DEVICE=cuda KOKORO_VOICE=am_adam\n"
                         "EXPOSE 8899\n"
-                        "COPY kokoro_server.py blends.json start_server.sh ./\n"
-                        "CMD [\"python\", \"kokoro_server.py\"]\n"
+                        "CMD [\"python3\", \"kokoro_server.py\"]\n"
                     )
                 else:
                     content = (
                         "FROM python:3.12-slim\n"
                         "RUN apt-get update && apt-get install -y --no-install-recommends "
-                        "espeak-ng && rm -rf /var/lib/apt/lists/*\n"
-                        "RUN pip install --no-cache-dir "
-                        "\"torch --index-url https://download.pytorch.org/whl/cpu\" "
-                        "ctranslate2 kokoro>=0.9.4 numpy>=1.24 soundfile\n"
+                        "git espeak-ng && rm -rf /var/lib/apt/lists/* && rm -f /usr/lib/python3.12/EXTERNALLY-MANAGED 2>/dev/null; true\n"
+                        "RUN git clone --depth 1 https://github.com/fswolf/kokoro-reader.git /opt/kokoro-reader\n"
+                        "RUN pip install --no-cache-dir --break-system-packages "
+                        "\"torch[cpu]\" ctranslate2 kokoro>=0.9.4 numpy>=1.24 soundfile\n"
                         "WORKDIR /opt/kokoro-reader/server\n"
                         "ENV KOKORO_HOST=0.0.0.0 KOKORO_PORT=8899 KOKORO_LANG=a "
                         "KOKORO_DEVICE= KOKORO_VOICE=am_adam\n"
                         "EXPOSE 8899\n"
-                        "COPY kokoro_server.py blends.json start_server.sh ./\n"
-                        "CMD [\"python\", \"kokoro_server.py\"]\n"
+                        "CMD [\"python3\", \"kokoro_server.py\"]\n"
                     )
                 with open(os.path.join(tmpdir, "Dockerfile"), "w") as f:
                     f.write(content)

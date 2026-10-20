@@ -1,13 +1,19 @@
 # CPU fallback — runs everywhere, no GPU needed.
 FROM python:3.12-slim
 
-# espeak-ng is needed by kokoro for phonemization
+# git + espeak-ng for kokoro phonemization
+# Remove EXTERNALLY-MANAGED so pip works without --break-system-packages
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    espeak-ng && rm -rf /var/lib/apt/lists/*
+    git espeak-ng && rm -rf /var/lib/apt/lists/* \
+    && rm -f /usr/lib/python3.12/EXTERNALLY-MANAGED 2>/dev/null; true
+
+# Clone kokoro-reader server files
+RUN git clone --depth 1 https://github.com/fswolf/kokoro-reader.git /opt/kokoro-reader
 
 # CPU-only PyTorch (lightweight, no CUDA bloat)
-RUN pip install --no-cache-dir \
-    "torch --index-url https://download.pytorch.org/whl/cpu" \
+# --break-system-packages: standard in Docker since the container IS the environment
+RUN pip install --no-cache-dir --break-system-packages \
+    "torch[cpu]" \
     ctranslate2 \
     kokoro>=0.9.4 \
     numpy>=1.24 \
@@ -24,6 +30,4 @@ ENV KOKORO_HOST=0.0.0.0 \
 
 EXPOSE 8899
 
-COPY kokoro_server.py blends.json start_server.sh ./
-
-CMD ["python", "kokoro_server.py"]
+CMD ["python3", "kokoro_server.py"]
