@@ -199,6 +199,150 @@ def start_voice(v):
 
 
 # ---------------------------------------------------------------------------
+# Container voice mode (Podman)
+# ---------------------------------------------------------------------------
+
+VOICE_IMAGE = "luna-tts"
+VOICE_CONTAINER = "luna-tts"
+
+
+def _podman_run(args, check=True):
+    """Run a podman command."""
+    try:
+        r = subprocess.run(["podman"] + args, capture_output=True, text=True, timeout=30)
+        if check and r.returncode != 0:
+            print(f"  podman {' '.join(args)}: {r.stderr[:200]}", file=sys.stderr)
+        return r
+    except FileNotFoundError:
+        return None
+    except subprocess.TimeoutExpired:
+        return None
+
+
+def _container_voice_proc(mode):
+    """Start the voice server via Podman container. Returns None (container is separate).
+    
+    Checks if the container is running, starts it if stopped, or builds + starts
+    if it doesn't exist yet.
+    """
+    port = 8899
+    if up(f"http://127.0.0.1:{port}/health"):
+        return None
+    
+    image_tag = f"{VOICE_IMAGE}:{mode}"
+    name = VOICE_CONTAINER
+    
+    # Check existing container status
+    r = _podman_run(["ps", "-a", "--filter", f"name={name}", "--format", "{{.Status}}"])
+    status = r.stdout.strip() if r else ""
+    
+    if not status:
+        # Container doesn't exist — try to build it from Dockerfile
+        print("  voice container not found. Building...")
+        tmpdir = os.path.join(ROOT, "tts", ".build-tmp")
+        os.makedirs(tmpdir, exist_ok=True)
+        try:
+            # Clone kokoro-reader if needed
+            kokoro_dir = os.environ.get("LUNA_KOKORO_DIR",
+                                        os.path.join(os.path.dirname(ROOT), "kokoro-reader"))
+            server_dir = os.path.join(kokoro_dir, "server")
+            has_server = os.path.isfile(os.path.join(server_dir, "kokoro_server.py"))
+            if not has_server:
+                print("  cloning kokoro-reader...")
+                r = subprocess.run(["git", "clone", "--depth", "1",
+                                    os.environ.get("LUNA_KOKORO_REPO",
+                                                   "https://github.com/fswolf/kokoro-reader.git"),
+                                    kokoro_dir],
+                                   capture_output=True, text=True)
+                if r.returncode != 0:
+                    print("  voice container: clone failed", file=sys.stderr)
+                    return None
+            
+            # Copy server files into build context
+            for fname in ["kokoro_server.py", "blends.json", "start_server.sh"]:
+                src = os.path.join(server_dir, fname)
+                if os.path.isfile(src):
+                    shutil.copy2(src, tmpdir)
+            
+            # Write Dockerfile to build context
+            dockerfile_name = "Dockerfile.cuda" if mode == "container_cuda" else "Dockerfile"
+            df_src = os.path.join(ROOT, "tts", dockerfile_name)
+            if os.path.isfile(df_src):
+                shutil.copy2(df_src, os.path.join(tmpdir, "Dockerfile"))
+            else:
+                # Inline fallback
+                if mode == "container_cuda":
+                    content = (
+                        "FROM nvidia/cuda:12.9.1-cudnn-runtime-ubuntu24.04\n"
+                        "RUN apt-get update && apt-get install -y --no-install-recommends "
+                        "espeak-ng python3-pip && rm -rf /var/lib/apt/lists/*\n"
+                        "RUN pip install --no-cache-dir torch ctranslate2 kokoro>=0.9.4 "
+                        "numpy>=1.24 soundfile\n"
+                        "WORKDIR /opt/kokoro-reader/server\n"
+                        "ENV KOKORO_HOST=0.0.0.0 KOKORO_PORT=8899 KOKORO_LANG=a "
+                        "KOKORO_DEVICE=cuda KOKORO_VOICE=am_adam\n"
+                        "EXPOSE 8899\n"
+                        "COPY kokoro_server.py blends.json start_server.sh ./\n"
+                        "CMD [\"python\", \"kokoro_server.py\"]\n"
+                    )
+                else:
+                    content = (
+                        "FROM python:3.12-slim\n"
+                        "RUN apt-get update && apt-get install -y --no-install-recommends "
+                        "espeak-ng && rm -rf /var/lib/apt/lists/*\n"
+                        "RUN pip install --no-cache-dir "
+                        "\"torch --index-url https://download.pytorch.org/whl/cpu\" "
+                        "ctranslate2 kokoro>=0.9.4 numpy>=1.24 soundfile\n"
+                        "WORKDIR /opt/kokoro-reader/server\n"
+                        "ENV KOKORO_HOST=0.0.0.0 KOKORO_PORT=8899 KOKORO_LANG=a "
+                        "KOKORO_DEVICE= KOKORO_VOICE=am_adam\n"
+                        "EXPOSE 8899\n"
+                        "COPY kokoro_server.py blends.json start_server.sh ./\n"
+                        "CMD [\"python\", \"kokoro_server.py\"]\n"
+                    )
+                with open(os.path.join(tmpdir, "Dockerfile"), "w") as f:
+                    f.write(content)
+            
+            print(f"  building {image_tag}")
+            r = subprocess.run(["podman", "build", "-t", image_tag, tmpdir],
+                               capture_output=True, text=True)
+            if r.returncode != 0:
+                print(f"  voice container build failed: {r.stderr[:300]}", file=sys.stderr)
+                return None
+            
+            print("  container image built.")
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+    
+    elif "Exited" in status or "exited" in status:
+        # Container exists but stopped — restart it
+        _podman_run(["start", name])
+        print("  container restarted.")
+    elif "Up" in status:
+        # Already running
+        return None
+    
+    # Start the container
+    cmd = ["run", "-d", "--name", name, "--network", "host"]
+    if mode == "container_cuda":
+        cmd.extend(["--gpus", "all"])
+    cmd.append(image_tag)
+    
+    r = subprocess.run(["podman"] + cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        print(f"  failed to start voice container: {r.stderr[:200]}", file=sys.stderr)
+        return None
+    
+    print("  voice container started.")
+    return None  # Container is managed externally by podman
+
+
+def stop_voice_container():
+    """Stop the voice container (called on app exit)."""
+    _podman_run(["stop", VOICE_CONTAINER], check=False)
+
+
+# ---------------------------------------------------------------------------
 # Packages: what installer/requirements.txt asks for, against what's installed
 # ---------------------------------------------------------------------------
 REQUIREMENTS = os.path.join(ROOT, "installer", "requirements.txt")
@@ -311,6 +455,14 @@ def check(py):
         ready = os.path.exists(v.get("python", "")) and os.path.exists(v.get("server", ""))
         line(ready, "her voice server is installed - ./start.sh starts it" if ready else
              "her voice server isn't where the installer left it", "run the installer again: ./installer/install.sh")
+    elif v.get("mode") in ("container", "container_cuda") and _here(url):
+        # Container is started by launch.py; just check if it's answering
+        image = v.get("image", f"{VOICE_IMAGE}:{v.get('mode')}")
+        health = up(url + "/health")
+        line(health,
+             f"voice container ({image}) is answering" if health
+             else f"voice container ({image}) isn't answering yet",
+             "run the installer again: ./installer/install.sh")
     elif v.get("mode") == "none":
         line(True, "no voice server set up - she'll be text-only")
     else:
@@ -358,11 +510,19 @@ def main():
     url = tts_url()
     if v.get("mode") == "managed" and _here(url):   # a voice on another machine needs nothing started here
         voice = start_voice(v)
+    elif v.get("mode") in ("container", "container_cuda") and _here(url):
+        _container_voice_proc(v["mode"])
+
+    # Register container stop on exit
+    if v.get("mode") in ("container", "container_cuda"):
+        import atexit
+        atexit.register(stop_voice_container)
 
     warnings = []
     if not model_up():
         warnings.append("No model server - open LM Studio's Local Server, or run llama/start.sh.")
-    if not (v.get("mode") == "managed" and _here(url)) and v.get("mode") != "none" and not up(url + "/health"):
+    if not (v.get("mode") in ("managed", "container", "container_cuda") and _here(url)) \
+       and v.get("mode") != "none" and not up(url + "/health"):
         warnings.append(f"No voice server at {url} - she'll start text-only.")
     if warnings:
         print("Starting anyway:\n  " + "\n  ".join(warnings), file=sys.stderr)

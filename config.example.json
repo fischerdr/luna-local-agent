@@ -23,6 +23,7 @@
     },
     "tts": {
         "url": "http://127.0.0.1:8899",
+        "mode": "container_cuda",
         "speed": 1.0,
         "volume": 1.0,
         "pitch": 0.0

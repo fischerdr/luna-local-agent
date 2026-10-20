@@ -10,7 +10,8 @@ without asking first - system packages show the exact command and wait.
 
     --yes                take every default, ask nothing
     --backend X          lmstudio (default), llama, or skip
-    --voice X            install (default), url:http://host:port, or skip
+    --voice X            install (default), container, container_cuda,
+                         url:http://host:port, or skip
     --gpu X              auto (default), cpu, cuda, rocm - for the voice server
     --extras a,b         wakeword, mcp, portrait, live2d, embeddings, reranker, chat, camera  (or "all")
     --no-system          don't install system packages, just say which are missing
@@ -40,6 +41,7 @@ EMBED_URL = ("https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main
 RERANK_URL = ("https://huggingface.co/ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF/resolve/main/"
               "qwen3-reranker-0.6b-q8_0.gguf")
 CUBISM_URL = "https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"
+IMAGE_NAME = "luna-tts"              # Podman image name for container voice mode
 
 EXTRAS = {
     "wakeword": (["openwakeword"], "\"hey Luna\" instead of a key press"),
@@ -230,7 +232,9 @@ def check_system():
         sys.exit(1)
     ok(f"Python {v.major}.{v.minor} on {SYSTEM} {platform.machine()}")
     if v >= (3, 14):
-        warn("Python 3.14+ is newer than some speech packages support yet - 3.12 is the safe choice")
+        # Python 3.14 is fine for the main app; the voice runs in a container
+        # on Python 3.12 (or in-process if container mode isn't used).
+        ok("Python 3.14 - the voice server runs in a container on Python 3.12")
     gpu, label = detect_gpu()
     ok(f"GPU: {label}")
     free = shutil.disk_usage(ROOT).free // (1 << 30)
@@ -410,6 +414,116 @@ def python_env(state, extras):
 # ---------------------------------------------------------------------------
 # 4. The voice: kokoro-reader
 # ---------------------------------------------------------------------------
+
+def _has_nvidia_gpu():
+    """Check if an NVIDIA GPU is available on the host."""
+    try:
+        result = subprocess.run(
+            ["nvidia-smi"], capture_output=True, text=True, timeout=5
+        )
+        return result.returncode == 0
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return False
+
+
+def _voice_container(state, mode, gpu_choice):
+    """Set up voice using a Podman container.
+    
+    Builds the kokoro-reader image (CPU or CUDA) and records it in install.json.
+    
+    Args:
+        state: Current install state dict.
+        mode: "container" (CPU) or "container_cuda" (NVIDIA GPU).
+        gpu_choice: GPU detection result from check_system().
+    """
+    import tempfile
+    
+    image_tag = f"{IMAGE_NAME}:{mode}"
+    step(f"Building voice container: {image_tag}")
+    
+    tmpdir = tempfile.mkdtemp(prefix="luna-tts-build-")
+    try:
+        # Clone kokoro-reader if needed
+        kokoro_dir = state.get("kokoro_dir") or os.path.join(os.path.dirname(ROOT), "kokoro-reader")
+        server_dir = os.path.join(kokoro_dir, "server")
+        has_server = os.path.isfile(os.path.join(server_dir, "kokoro_server.py"))
+        
+        if not has_server:
+            print(f"  cloning kokoro-reader to {kokoro_dir}")
+            if not run(["git", "clone", "--depth", "1", KOKORO_REPO, kokoro_dir]):
+                note("voice", False, "clone failed")
+                return
+            save_state(state)
+        
+        # Copy server files into build context
+        for fname in ["kokoro_server.py", "blends.json", "start_server.sh"]:
+            src = os.path.join(server_dir, fname)
+            if os.path.isfile(src):
+                shutil.copy2(src, tmpdir)
+        
+        # Write Dockerfile to build context
+        dockerfile_name = "Dockerfile.cuda" if mode == "container_cuda" else "Dockerfile"
+        dockerfile_src = os.path.join(ROOT, "tts", dockerfile_name)
+        if os.path.isfile(dockerfile_src):
+            shutil.copy2(dockerfile_src, os.path.join(tmpdir, "Dockerfile"))
+        else:
+            # Fallback: embed inline
+            if mode == "container_cuda":
+                content = ("FROM nvidia/cuda:12.9.1-cudnn-runtime-ubuntu24.04\n"
+                           "RUN apt-get update && apt-get install -y --no-install-recommends "
+                           "espeak-ng python3-pip && rm -rf /var/lib/apt/lists/*\n"
+                           "RUN pip install --no-cache-dir torch ctranslate2 kokoro>=0.9.4 "
+                           "numpy>=1.24 soundfile\n"
+                           "WORKDIR /opt/kokoro-reader/server\n"
+                           "ENV KOKORO_HOST=0.0.0.0 KOKORO_PORT=8899 KOKORO_LANG=a "
+                           "KOKORO_DEVICE=cuda KOKORO_VOICE=am_adam\n"
+                           "EXPOSE 8899\n"
+                           "COPY kokoro_server.py blends.json start_server.sh ./\n"
+                           "CMD [\"python\", \"kokoro_server.py\"]\n")
+            else:
+                content = ("FROM python:3.12-slim\n"
+                           "RUN apt-get update && apt-get install -y --no-install-recommends "
+                           "espeak-ng && rm -rf /var/lib/apt/lists/*\n"
+                           "RUN pip install --no-cache-dir "
+                           "\"torch --index-url https://download.pytorch.org/whl/cpu\" "
+                           "ctranslate2 kokoro>=0.9.4 numpy>=1.24 soundfile\n"
+                           "WORKDIR /opt/kokoro-reader/server\n"
+                           "ENV KOKORO_HOST=0.0.0.0 KOKORO_PORT=8899 KOKORO_LANG=a "
+                           "KOKORO_DEVICE= KOKORO_VOICE=am_adam\n"
+                           "EXPOSE 8899\n"
+                           "COPY kokoro_server.py blends.json start_server.sh ./\n"
+                           "CMD [\"python\", \"kokoro_server.py\"]\n")
+            with open(os.path.join(tmpdir, "Dockerfile"), "w") as f:
+                f.write(content)
+        
+        # Build image
+        result = subprocess.run(
+            ["podman", "build", "-t", image_tag, tmpdir],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            fail(f"Failed to build voice container")
+            print(f"  {result.stderr[:500]}")
+            note("voice", False, "container build failed")
+            return
+        
+        ok(f"container image built: {image_tag}")
+        
+        # Record in state — launch.py will start/stop the container
+        state["voice"] = {
+            "mode": mode,
+            "url": "http://127.0.0.1:8899",
+            "image": image_tag,
+            "port": 8899,
+        }
+        set_config("tts", "url", "http://127.0.0.1:8899")
+        note("voice", True,
+             f"Podman container {image_tag} (starts on launch; blending intact)")
+    
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 def voice(state, gpu_choice):
     step("Her voice (kokoro-reader)")
     mode = ARGS.voice
@@ -430,6 +544,40 @@ def voice(state, gpu_choice):
         (ok if http_ok(url + "/health") else warn)(f"pointing her at {url}")
         note("voice", True, url)
         return
+
+    # --- Container modes ---
+    if mode in ("container", "container_cuda"):
+        _voice_container(state, mode, gpu_choice)
+        save_state(state)
+        return
+
+    # --- Process mode (existing path) ---
+    # When mode is "install" (default) and podman is available,
+    # offer container mode as an alternative to in-process venv.
+    if mode == "install":
+        import subprocess
+        has_podman = shutil.which("podman")
+        has_nvidia = _has_nvidia_gpu()
+        if has_podman and not state.get("kokoro_dir"):
+            choices = [("p", "process  - venv on the host (existing)"),
+                       ("c", "container  - Podman image (CPU, faster startup)")]
+            if has_nvidia:
+                choices = [("p", "process  - venv on the host (existing)"),
+                           ("g", "container_cuda  - Podman + NVIDIA GPU (recommended)"),
+                           ("c", "container  - Podman image (CPU)")]
+            choice = choose("Voice server mode?", choices, "g" if has_nvidia else "c")
+            if choice == "g":
+                _voice_container(state, "container_cuda", gpu_choice)
+                save_state(state)
+                return
+            if choice == "c":
+                _voice_container(state, "container", gpu_choice)
+                save_state(state)
+                return
+            # choice == "p" or "g": fall through to process mode below
+        elif has_nvidia and not state.get("kokoro_dir"):
+            # No podman but has NVIDIA — warn
+            warn("NVIDIA GPU detected but podman isn't installed — using process mode")
 
     kdir = state.get("kokoro_dir") or os.path.join(os.path.dirname(ROOT), "kokoro-reader")
     if os.path.isdir(os.path.join(kdir, ".git")):
@@ -702,7 +850,8 @@ def main():
                                  epilog=__doc__.split("\n\n", 2)[-1])
     ap.add_argument("--yes", "-y", action="store_true")
     ap.add_argument("--backend", choices=["lmstudio", "llama", "skip"])
-    ap.add_argument("--voice", default="install")
+    ap.add_argument("--voice", choices=["install", "container", "container_cuda", "skip"],
+                    default="install")
     ap.add_argument("--gpu", default="auto", choices=["auto", "cpu", "cuda", "rocm", "mps"])
     ap.add_argument("--extras", default=None)
     ap.add_argument("--no-system", action="store_true")
