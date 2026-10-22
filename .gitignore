@@ -128,3 +128,10 @@ evals/results/
 # usually not yours to share. Only the folder's README goes in git.
 portrait/sounds/*
 !portrait/sounds/README.md
+
+# Containers (python -m services): this machine's settings, and a compose
+# server's settings and secrets
+services/services.local.env
+deploy/.env
+deploy/api_key
+deploy/hf_token
