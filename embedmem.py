@@ -59,7 +59,11 @@ def _root():
 
 def available():
     """Is the embedding server answering? Checked at most every RECHECK
-    seconds, so a turn never waits on a server that isn't there."""
+    seconds, so a turn never waits on a server that isn't there.
+
+    In container mode, if the server isn't running, tries to start it
+    on-demand via llama_side (which stops it after IDLE_TIMEOUT).
+    """
     now = time.monotonic()
 
     if _state["up"] is not None and now - _state["checked"] < RECHECK:
@@ -73,6 +77,24 @@ def available():
                            if up else "")
     except Exception:
         up = False
+
+    # Container mode: try on-demand start if the server isn't there.
+    if not up and _container_mode():
+        try:
+            import llama_side
+            if llama_side.ensure_embed():
+                # Give it a moment to load the model, then re-check
+                time.sleep(5)
+                try:
+                    response = requests.get(_root() + "/v1/models",
+                                            headers=config.EMBED_HEADERS, timeout=2)
+                    up = response.status_code == 200
+                    _state["model"] = ((response.json().get("data") or [{}])[0].get("id", "")
+                                       if up else "")
+                except Exception:
+                    pass
+        except Exception as e:
+            logbook.warn("embed", "on-demand start failed: %s", e)
 
     if up != _state["up"]:
         logbook.info("embed", "embedding server %s",
@@ -219,7 +241,11 @@ def rank(query, facts):
 # The reranker
 # ---------------------------------------------------------------------------
 def reranker_available():
-    """Is the reranker answering? Same cadence as available()."""
+    """Is the reranker answering? Same cadence as available().
+
+    In container mode, if the server isn't running, tries to start it
+    on-demand via llama_side (which stops it after IDLE_TIMEOUT).
+    """
     now = time.monotonic()
 
     if _rerank["up"] is not None and now - _rerank["checked"] < RECHECK:
@@ -233,6 +259,23 @@ def reranker_available():
                             if up else "")
     except Exception:
         up = False
+
+    # Container mode: try on-demand start if the server isn't there.
+    if not up and _container_mode():
+        try:
+            import llama_side
+            if llama_side.ensure_rerank():
+                time.sleep(5)
+                try:
+                    response = requests.get(config.RERANK_URL.split("/v1/")[0] + "/v1/models",
+                                            headers=config.EMBED_HEADERS, timeout=2)
+                    up = response.status_code == 200
+                    _rerank["model"] = ((response.json().get("data") or [{}])[0].get("id", "")
+                                        if up else "")
+                except Exception:
+                    pass
+        except Exception as e:
+            logbook.warn("embed", "on-demand reranker start failed: %s", e)
 
     if up != _rerank["up"]:
         logbook.info("embed", "reranker %s",

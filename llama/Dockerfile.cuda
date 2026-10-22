@@ -1,0 +1,13 @@
+# llama.cpp server with CUDA — pre-built base from ggml-org
+#
+#   podman build -t luna-llama:cuda -f llama/Dockerfile.cuda .
+#   podman run --gpus all -v /path/to/models:/models:ro -p 8080:8080 luna-llama:cuda
+
+ARG BASE=ghcr.io/ggml-org/llama.cpp:server-cuda13
+FROM $BASE
+
+# Wrapper: loads server.env from volume, discovers model, runs llama-server
+COPY server.sh /server.sh
+RUN chmod +x /server.sh
+
+ENTRYPOINT ["/server.sh"]

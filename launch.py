@@ -26,10 +26,16 @@ what's missing, instead of her stopping with a traceback.
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
 import urllib.request
+
+try:
+    import llama.llama_container as _llama_cont
+except ImportError:
+    _llama_cont = None
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 WIN = os.name == "nt"
@@ -121,7 +127,15 @@ def start_llama(s):
     if WIN or llm.get("autostart", True) is False or backend.startswith("lm") or s.get("backend") == "lmstudio":
         return None
     script = os.path.join(LLAMA_DIR, "start.sh")
-    if model_up() or not os.path.exists(script) or not os.access(os.path.join(LLAMA_DIR, "bin", "llama-server"), os.X_OK):
+    has_binary = os.access(os.path.join(LLAMA_DIR, "bin", "llama-server"), os.X_OK)
+    if model_up():
+        return None
+    if not has_binary and _llama_cont and not _llama_cont.llama_container_running():
+        # Container mode: pull/build and start the container
+        _llama_cont.start_llama_container()
+        time.sleep(2)  # give the container a moment to start
+        return None  # container is managed separately
+    if not os.path.exists(script) or not has_binary:
         return None
 
     log_path = os.path.join(LLAMA_DIR, "server.log")
@@ -149,19 +163,27 @@ def start_llama(s):
 
 
 def stop_group(proc):
-    """Stop a process and everything it started (llama/start.sh's side servers)."""
+    """Stop a process and everything it started (llama/start.sh's side servers).
+    Also stops the llama.cpp container if it's running."""
     if not proc or proc.poll() is not None:
-        return
-    try:
-        if WIN:
-            proc.terminate()
-        else:
-            import signal
-            os.killpg(proc.pid, signal.SIGTERM)
-        proc.wait(8)
-    except Exception:
+        pass  # may still need to stop the container
+    else:
         try:
-            proc.kill()
+            if WIN:
+                proc.terminate()
+            else:
+                import signal
+                os.killpg(proc.pid, signal.SIGTERM)
+            proc.wait(8)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+    # Stop the llama.cpp container if running
+    if _llama_cont:
+        try:
+            _llama_cont.stop_llama_container()
         except Exception:
             pass
 
@@ -317,6 +339,7 @@ def _container_voice_proc(mode):
         # Container exists but stopped — restart it
         _podman_run(["start", name])
         print("  container restarted.")
+        return None  # started above; don't try to run() again
     elif "Up" in status:
         # Already running
         return None

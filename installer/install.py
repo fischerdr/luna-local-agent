@@ -25,12 +25,16 @@ import platform
 import shutil
 import subprocess
 import sys
+import time
 import urllib.request
 import venv
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HERE = os.path.join(ROOT, "installer")
 STATE = os.path.join(ROOT, "install.json")
+# Make sibling packages importable (e.g. llama.llama_container)
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 SYSTEM = platform.system()          # Linux, Darwin, Windows
 WIN = SYSTEM == "Windows"
 KOKORO_REPO = os.environ.get("LUNA_KOKORO_REPO", "https://github.com/fswolf/kokoro-reader.git")
@@ -161,21 +165,28 @@ def http_ok(url, timeout=2):
 USER_AGENT = "Mozilla/5.0 (compatible; luna-installer; +https://github.com/fswolf/luna-local-agent)"
 
 
-def _curl(url, tmp):
+def _curl(url, tmp, token=None):
     """Second try with the system curl, which every Mac and most Linux
     boxes have - different TLS stack, different fingerprint."""
     curl = shutil.which("curl")
     if not curl:
         return False
-    return subprocess.run([curl, "-fsSL", "--retry", "2", "-A", USER_AGENT, "-o", tmp, url]).returncode == 0
+    cmd = [curl, "-fsSL", "--retry", "2", "-A", USER_AGENT, "-o", tmp, url]
+    if token:
+        cmd = [curl, "-fsSL", "--retry", "2", "-A", USER_AGENT,
+               "-H", f"Authorization: Bearer {token}", "-o", tmp, url]
+    return subprocess.run(cmd).returncode == 0
 
 
-def download(url, dest):
+def download(url, dest, token=None):
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     tmp = dest + ".part"
     print(f"  {D}downloading {url}{X}")
     try:
-        request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        headers = {"User-Agent": USER_AGENT}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        request = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(request, timeout=60) as r, open(tmp, "wb") as f:
             total = int(r.headers.get("Content-Length") or 0)
             got = 0
@@ -193,7 +204,7 @@ def download(url, dest):
         return True
     except Exception as e:
         print(f"  {D}{e} - trying curl{X}")
-        if _curl(url, tmp):
+        if _curl(url, tmp, token=token):
             os.replace(tmp, dest)
             return True
         fail(f"download failed: {e}")
@@ -638,16 +649,230 @@ def voice(state, gpu_choice):
 # ---------------------------------------------------------------------------
 # 5. The brain
 # ---------------------------------------------------------------------------
+
+# Build tools and package names for llama.cpp's install.sh on each platform
+_LLAMA_VULKAN_TOOLS = ("cmake", "g++", "git", "glslc")
+_LLAMA_ROCM_TOOLS = ("cmake", "g++", "git", "hipconfig")
+_LLAMA_VULKAN_RPM = ("cmake", "gcc-c++", "git", "glslc", "vulkan-headers",
+                     "vulkan-loader-devel", "spirv-headers-devel")
+_LLAMA_VULKAN_APT = ("cmake", "g++", "git", "glslc", "vulkan-tools", "vulkan-Headers",
+                     "vulkan-loader-dev", "spirv-headers")
+_LLAMA_ROCM_RPM = ("cmake", "gcc-c++", "git", "rocm-hip-devel", "hipblas-devel",
+                   "rocblas-devel", "rocm-cmake")
+_LLAMA_ROCM_APT = ("cmake", "g++", "git")   # ROCm on Ubuntu is uncommon; user installs ROCm separately
+_LLAMA_VULKAN_PACMAN = ("cmake", "gcc", "git", "vulkan-headers", "vulkan-loader", "glslc")
+_LLAMA_VULKAN_ZYPPER = ("cmake", "gcc-c++", "git", "vulkan-headers", "vulkan-loader-devel",
+                        "spirv-headers-devel", "glslc")
+
+
+def _llama_build_tools(kind):
+    return _LLAMA_ROCM_TOOLS if kind == "rocm" else _LLAMA_VULKAN_TOOLS
+
+
+def _llama_build_rpm_pkgs(kind):
+    return _LLAMA_ROCM_RPM if kind == "rocm" else _LLAMA_VULKAN_RPM
+
+
+def _llama_build_apt_pkgs(kind):
+    return _LLAMA_ROCM_APT if kind == "rocm" else _LLAMA_VULKAN_APT
+
+
+def _llama_build_pacman_pkgs(kind):
+    return _LLAMA_VULKAN_PACMAN  # ROCm on Arch handled separately by user
+
+
+def _llama_build_zypper_pkgs(kind):
+    return _LLAMA_VULKAN_ZYPPER
+
+
+def _has_llama_local_bin():
+    """Check if llama.cpp local binary exists."""
+    return os.path.isfile(os.path.join(ROOT, "llama", "bin", "llama-server"))
+
+
+def _has_llama_container_image():
+    """Check if a llama.cpp container image exists locally."""
+    result = subprocess.run(
+        ["podman", "images", "-q", "luna-llama:cuda",
+         "luna-llama:cuda13", "luna-llama:vulkan", "luna-llama:cpu"],
+        capture_output=True, text=True
+    )
+    return bool(result.stdout.strip())
+
+
+def _llama_container_running():
+    """Check if the llama container is currently running."""
+    result = subprocess.run(
+        ["podman", "ps", "--filter", "name=luna-llama", "--format", "{{.Status}}"],
+        capture_output=True, text=True
+    )
+    return "Up" in result.stdout.strip()
+
+
+# Chat model choices - each entry is (filename, huggingface_repo, display_name, size_gb, min_vram_gb)
+_CHAT_MODELS = [
+    ("qwen3.5_4b_uncensored.Q8_0.gguf",
+     "arzaan789/qwen3.5-4b-uncensored",
+     "Qwen3.5 4B Uncensored Q8_0 (~2.5 GB, fits 6 GB VRAM)", 4, 4),
+    ("qwen3.5_4b_uncensored.Q5_K_M.gguf",
+     "arzaan789/qwen3.5-4b-uncensored",
+     "Qwen3.5 4B Uncensored Q5_K_M (~2 GB, fits 6 GB VRAM)", 4, 4),
+    ("qwen3.5_4b_uncensored.Q4_K_M.gguf",
+     "arzaan789/qwen3.5-4b-uncensored",
+     "Qwen3.5 4B Uncensored Q4_K_M (~1.5 GB, fits 4 GB VRAM)", 4, 3),
+    ("Qwen3.5-9B-DS9-USS-Defiant.Q4_K_M.gguf",
+     "mradermacher/Qwen3.5-9B-DS9-USS-Defiant-GGUF",
+     "Qwen3.5 9B Defiant Q4_K_M (~5 GB, needs 8 GB VRAM)", 9, 5),
+    ("Qwen3.5-9B-DS9-USS-Defiant.Q4_K_S.gguf",
+     "mradermacher/Qwen3.5-9B-DS9-USS-Defiant-GGUF",
+     "Qwen3.5 9B Defiant Q4_K_S (~5 GB, needs 8 GB VRAM)", 9, 5),
+    ("Qwen3.5-9B-DS9-USS-Defiant.Q3_K_M.gguf",
+     "mradermacher/Qwen3.5-9B-DS9-USS-Defiant-GGUF",
+     "Qwen3.5 9B Defiant Q3_K_M (~3.5 GB, needs 6 GB VRAM)", 9, 4),
+]
+
+
+def _get_hf_token():
+    """Get HuggingFace token from local cache, if available."""
+    token_path = os.path.expanduser("~/.cache/huggingface/token")
+    if os.path.isfile(token_path):
+        with open(token_path) as f:
+            token = f.read().strip()
+            if token:
+                return token
+    return None
+
+
+def _download_chat_model():
+    """Let the user pick and download a chat model. Returns True on success."""
+    print()
+    print("  Luna needs a chat model (4B for 6 GB VRAM, 9B for 8 GB).")
+    print("  The model is stored in llama/models/ and used by all backends.\n")
+    for i, (fname, _repo, label, size, vram) in enumerate(_CHAT_MODELS, 1):
+        print(f"    {i}. {label}")
+    if ARGS.yes:
+        # Default: 8B is the sweet spot
+        idx = 1
+    else:
+        raw = input("  > ").strip()
+        try:
+            idx = int(raw)
+        except ValueError:
+            idx = 2
+    if idx < 1 or idx > len(_CHAT_MODELS):
+        idx = 2
+
+    fname, repo, label, size, _vram = _CHAT_MODELS[idx - 1]
+    dest = os.path.join(ROOT, "llama", "models", fname)
+
+    if os.path.isfile(dest) and os.path.getsize(dest) > 100_000_000:
+        ok(f"chat model already here: {label}")
+        return True
+
+    print(f"\n  Downloading {label} ({size} GB)...")
+    token = _get_hf_token()
+
+    # Try huggingface-cli first (it uses cached tokens)
+    hf_cli = shutil.which("huggingface-cli")
+    if hf_cli:
+        cmd = [hf_cli, "download", repo, fname, "--local-dir", os.path.dirname(dest)]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+        if result.returncode == 0 and not result.stderr.strip():
+            if os.path.isfile(dest) and os.path.getsize(dest) > 10_000_000:
+                ok(f"chat model downloaded: {fname}")
+                return True
+    # Try with token via huggingface-cli
+    if token and hf_cli:
+        cmd = [hf_cli, "download", "--token", token, repo, fname,
+               "--local-dir", os.path.dirname(dest)]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+        if result.returncode == 0 and not result.stderr.strip():
+            if os.path.isfile(dest) and os.path.getsize(dest) > 10_000_000:
+                ok(f"chat model downloaded: {fname}")
+                return True
+    # Fall back to plain HTTP download
+    url = f"https://huggingface.co/{repo}/resolve/main/{fname}"
+    dest_tmp = dest + ".part"
+    got = download(url, dest_tmp, token=token)
+    if got:
+        os.replace(dest_tmp, dest)
+        ok(f"chat model downloaded: {fname}")
+        return True
+    error_msg = "all download methods failed"
+    if token:
+        error_msg = ("HF models are gated: accept the license at huggingface.co/"
+                      + repo + " then try huggingface-cli login")
+    print(f"  download failed: {error_msg}")
+    return False
+
+
+def _download_model_if_needed(url, label):
+    """Download a model if it's not already present. Returns True on success."""
+    fname = os.path.basename(url.split("?")[0])
+    dest = os.path.join(ROOT, "llama", "models", fname)
+    if os.path.isfile(dest) and os.path.getsize(dest) > 100_000_000:
+        ok(f"{label} already here: {fname}")
+        return True
+    if not ARGS.yes and not ask(f"Download the {label} (~{os.path.getsize(dest) // 1_000_000 if os.path.isfile(dest) else '600-640'} MB)?"):
+        return False
+    ok(f"Downloading {label}...")
+    got = download(url, dest + ".part")
+    if got:
+        os.replace(dest + ".part", dest)
+        ok(f"{label} downloaded: {fname}")
+        return True
+    print(f"  warning: failed to download {label}")
+    return False
+
+
 def backend(state):
     step("Her brain (the model server)")
+
+    # --- Detect what's already available ---------------------------------
+    lmstudio_running = http_ok("http://localhost:1234/v1/models")
+    local_bin = _has_llama_local_bin()
+    container_image = _has_llama_container_image()
+    container_up = _llama_container_running()
+
+    print()
+    if lmstudio_running:
+        ok("LM Studio server running on :1234")
+    else:
+        print("  ✗ LM Studio server not running")
+    if local_bin:
+        ok("llama.cpp local binary found")
+    else:
+        print("  ✗ llama.cpp local binary not found (needs build)")
+    if container_image:
+        kind = "pulled" if container_up else "exists"
+        ok(f"llama.cpp container image ({kind})")
+    else:
+        print("  ✗ llama.cpp container image not found (needs pull or build)")
+    if container_up:
+        ok("llama.cpp container running")
+    print()
+
     choice = ARGS.backend
     if choice is None:
-        options = [("lmstudio", "LM Studio - an app with a model browser; easiest"),
-                   ("llama", "llama.cpp's own server - builds it here, unlocks the research features"),
-                   ("skip", "skip - I'll set one up myself")]
-        if SYSTEM == "Windows":
-            options = [o for o in options if o[0] != "llama"]
+        options = []
+        if lmstudio_running:
+            options.append(("lmstudio", "LM Studio - already running on :1234"))
+        else:
+            options.append(("lmstudio", "LM Studio - an app with a model browser; easiest (default)"))
+
+        if container_image:
+            options.append(("llama", "llama.cpp container - image already available"))
+        else:
+            options.append(("llama", "llama.cpp container - pull/build the image now"))
+
+        # Local binary option if on Linux/macOS (not Windows)
+        if SYSTEM != "Windows" and not container_image:
+            options.append(("llama-build", "llama.cpp local build - compiles from source (needs build tools)"))
+
+        options.append(("skip", "skip - I'll set one up myself"))
+
         choice = choose("Which model server?", options, "lmstudio")
+
     state["backend"] = choice
 
     if choice == "lmstudio":
@@ -659,23 +884,99 @@ def backend(state):
             print("  2. Download a model (a 7-14B instruct model with tool calling - Qwen works well)")
             print("  3. Developer tab -> start the server (port 1234)")
         note("model server", up, "LM Studio" if up else "install LM Studio and start its server")
+
     elif choice == "llama":
         if SYSTEM == "Windows":
-            warn("the llama.cpp build script is Linux and macOS only so far - use LM Studio here")
+            warn("the llama.cpp container is Linux and macOS only - use LM Studio on Windows")
             note("model server", False, "llama.cpp: not on Windows yet")
             return
-        if SYSTEM == "Darwin":
-            kind = "metal"
-            if not shutil.which("cmake"):
-                print("  needs Apple's compiler and cmake first:")
-                print("    xcode-select --install")
-                print("    brew install cmake bash      (Homebrew: https://brew.sh)")
+        # --- Complete llama.cpp setup: image + models + verify ---------------
+        import llama.llama_container as lc
+        models_dir = os.path.join(ROOT, "llama", "models")
+        os.makedirs(models_dir, exist_ok=True)
+
+        # 1. Pull/build the container image
+        image = lc._detect_llama_image()
+        ok(f"Using GPU-optimized image: {image}")
+        good = lc.build_llama_container(mode=image.split(":")[-1])
+        if not good:
+            fail("couldn't get the llama.cpp container image")
+            note("model server", False, "image pull/build failed")
+            return
+        ok(f"container image ready: {image}")
+
+        # 2. Download chat model
+        chat_ok = _download_chat_model()
+
+        # 3. Ensure embedding model (needed for recall)
+        embed_ok = _download_model_if_needed(EMBED_URL, "embedding model")
+
+        # 4. Ensure reranker model (needed for sharper recall)
+        rerank_ok = _download_model_if_needed(RERANK_URL, "reranker model")
+
+        all_models_ok = chat_ok and embed_ok and rerank_ok
+
+        # 5. Count models for the report
+        model_files = [f for f in os.listdir(models_dir) if f.endswith(".gguf")] if models_dir else []
+        if model_files:
+            ok(f"{len(model_files)} model(s) in llama/models/: {', '.join(sorted(model_files))}")
+
+        # 6. Start the container
+        if ARGS.yes or ask("Start the container now to verify?"):
+            started = lc.start_llama_container()
+            if started:
+                # Wait a few seconds for the server to initialize
+                for _ in range(10):
+                    time.sleep(2)
+                    if http_ok("http://127.0.0.1:8080/health"):
+                        break
+                health_ok = http_ok("http://127.0.0.1:8080/health")
+                models_ok = http_ok("http://127.0.0.1:8080/v1/models")
+                if health_ok and models_ok:
+                    ok("llama.cpp container running and responding")
+                    note("model server", True,
+                         f"container running - {len(model_files)} model(s) loaded on :8080")
+                elif health_ok:
+                    warn("container is up but no models loaded - check llama/models/")
+                    note("model server", True,
+                         "container running - put a .gguf model in llama/models/ and restart")
+                else:
+                    warn("container started but health check didn't respond (may still be loading)")
+                    note("model server", True,
+                         "container started - give it a minute and check llama/start.sh")
+            else:
+                fail("failed to start llama.cpp container")
+                note("model server", False, "image ready but container failed to start")
         else:
-            kind = "rocm" if detect_gpu()[0] == "rocm" else "vulkan"
-        print(f"  building llama.cpp ({kind}) - this takes a few minutes")
-        good = run(["bash", os.path.join(ROOT, "llama", "install.sh"), kind])
-        note("model server", good, "llama.cpp built - put a model in llama/models and run llama/start.sh"
-             if good else "llama.cpp build failed - see above")
+            note("model server", all_models_ok,
+                 "image ready + models downloaded - run llama/start.sh to start")
+        state["backend"] = "llama"
+
+    elif choice == "llama-build":
+        if SYSTEM == "Windows":
+            warn("local llama.cpp build is not available on Windows")
+            note("model server", False, "llama.cpp: not on Windows")
+            return
+        # Fallback to the legacy local build from source
+        import llama.llama_container as lc
+        models_dir = os.path.join(ROOT, "llama", "models")
+        os.makedirs(models_dir, exist_ok=True)
+        ok("Falling back to local binary build (takes a while)...")
+        build_result = subprocess.run(
+            ["bash", os.path.join(ROOT, "llama", "install.sh")],
+            cwd=os.path.join(ROOT, "llama"),
+            capture_output=True, text=True
+        )
+        if build_result.returncode == 0:
+            ok("llama.cpp local binary built")
+            state["backend"] = "llama"
+            note("model server", True,
+                 "local binary built - download a chat model and run llama/start.sh")
+        else:
+            fail("local build failed")
+            note("model server", False,
+                 "local build failed - check stderr above, or use container instead")
+
     else:
         note("model server", False, "skipped")
 
@@ -849,7 +1150,7 @@ def main():
     ap.add_argument("--yes", "-y", action="store_true")
     ap.add_argument("--backend", choices=["lmstudio", "llama", "skip"])
     ap.add_argument("--llama", action="store_true",
-                    help="force llama.cpp install (implies --backend llama, download embedding + reranker models)")
+                    help="force llama.cpp install (implies --backend llama, downloads all models, pulls container)")
     ap.add_argument("--voice", choices=["install", "container", "container_cuda", "skip"],
                     default="install")
     ap.add_argument("--gpu", default="auto", choices=["auto", "cpu", "cuda", "rocm", "mps"])
@@ -879,18 +1180,18 @@ def main():
             step("Extras")
             extras = []
             for key, (_pkgs, what) in EXTRAS.items():
-                if key in ("embeddings", "reranker") and ARGS.backend not in (None, "llama"):
+                # Embeddings/reranker are handled by the llama.cpp backend step
+                llm_backend = ARGS.backend == "llama" or ARGS.llama
+                if key in ("embeddings", "reranker") and llm_backend:
                     continue
                 if ask(f"{key}: {what}?", default=key in ("mcp", "portrait")):
                     extras.append(key)
     else:
         extras = [e for e in (EXTRAS if ARGS.extras == "all" else ARGS.extras.split(",")) if e in EXTRAS]
-
-    # --llama: auto-add embedding + reranker so the models download
-    if ARGS.llama:
-        for e in ("embeddings", "reranker"):
-            if e not in extras:
-                extras.append(e)
+        # Same skip: llama.cpp backend handles its own models
+        llm_backend = ARGS.backend == "llama" or ARGS.llama
+        if llm_backend:
+            extras = [e for e in extras if e not in ("embeddings", "reranker")]
     state["extras"] = extras
 
     system_packages()
