@@ -76,6 +76,8 @@ git switch -c feat/containers 6d1ef9f
   - `config.example.json`: one new `services` block, off by default.
   - `.gitignore`: append-only entries for `services/services.local.env`,
     `deploy/.env`, `deploy/api_key` and `deploy/hf_token`.
+  - `embedmem.py`: P9's default-off on-demand hook only (approved
+    2026-10-22).
   - Docs, additive only, exactly as listed in section 11: `README.md`,
     `docs/README.md`, `docs/_Sidebar.md`, `docs/install.md`,
     `docs/configuration.md`, `docs/development.md`, `docs/knowledge.md`,

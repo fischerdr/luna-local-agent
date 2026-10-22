@@ -173,6 +173,8 @@ services.env adds:
 | `LLAMA_BACKEND` | `auto` | the image: `auto`, `cpu`, `cuda`, `cuda13`, `rocm`, `vulkan` |
 | `TTS_DEVICE` | `auto` | the voice: `auto` (the GPU on NVIDIA), `cpu`, `cuda` |
 | `READY_TIMEOUT` | `600` | seconds `up` waits for each to answer |
+| `EMBED_ONDEMAND` | `off` | `on`: the embedder and reranker start when wanted (below) |
+| `EMBED_IDLE`, `RERANK_IDLE` | `600` | seconds without use before an on-demand one is stopped |
 
 A role with no GPU layers (`EMBED_NGL=0`) runs in the cpu image, with no
 GPU at all, so it takes no video memory.
@@ -194,6 +196,15 @@ facts takes under 1.5 seconds there. Otherwise it's turned off
 answer only if you say so: `EMBED_NGL` and `RERANK_NGL` to
 services.local.env, `RERANK=off` to llama/server.local.env. Setup offers
 to run it once.
+
+Or have them only while they're used: `EMBED_ONDEMAND=on` in
+services.local.env. Then `up` and `./start.sh` leave the embedder and
+reranker stopped. The first time a turn wants one, it's started in the
+background. That turn doesn't wait: it recalls by matching words, as it
+would without one, and the next turn finds the server. When it hasn't
+been wanted for `EMBED_IDLE` (or `RERANK_IDLE`) seconds, it's stopped
+again. Only ones started this way are stopped, and only when they run
+on this machine.
 
 The voice on the GPU wants about 1 GB too. On a small card,
 `TTS_DEVICE=cpu` leaves that to chat; Kokoro speaks faster than real time

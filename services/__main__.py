@@ -48,7 +48,7 @@ def cmd_up(args):
             except EOFError:
                 sys.exit(1)
     token, _ = keys.token_source()
-    results = lifecycle.up(s, _roles(args.roles, lifecycle.default_roles(), ROLES), token)
+    results = lifecycle.up(s, _roles(args.roles, lifecycle.default_roles(s), ROLES), token)
     for r in results:
         mark = {"kept": "✓", "started": "✓", "skipped": "·", "failed": "✗"}[r.state]
         print(f"  {mark} {r.role}: {r.state}" + (f" - {r.note}" if r.note else ""))

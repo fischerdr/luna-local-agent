@@ -280,10 +280,14 @@ def config_voice():
         return "af_bella"
 
 
-def default_roles():
+def default_roles(s=None):
     """What up starts when no roles are named: the llama roles, and the
-    voice once setup tts has moved it into its container."""
-    return LLAMA_ROLES + (("tts",) if voice_state().get("container") == CONTAINER["tts"] else ())
+    voice once setup tts has moved it into its container. With
+    EMBED_ONDEMAND on, the embedder and reranker wait to be wanted."""
+    roles = LLAMA_ROLES
+    if s and str(s.get("EMBED_ONDEMAND", "")).lower() in ("on", "1", "true", "yes"):
+        roles = ("chat",)
+    return roles + (("tts",) if voice_state().get("container") == CONTAINER["tts"] else ())
 
 
 def tts_device(s, backend):

@@ -44,6 +44,33 @@ _lock = threading.Lock()
 _state = {"up": None, "checked": 0.0, "model": ""}
 _rerank = {"up": None, "checked": 0.0, "model": ""}
 
+# The embedder and reranker on demand, in containers (python -m services,
+# EMBED_ONDEMAND=on): told each time a server is asked about, so it can
+# start a container that's down and stop an idle one. Looked up once, and
+# only when config.json has a "services" block - without one, nothing
+# here is imported or called.
+_ondemand = None
+
+
+def _demand(role, up, url):
+    global _ondemand
+
+    if _ondemand is None:
+        _ondemand = False
+
+        if (getattr(config, "settings", None) or {}).get("services"):
+            try:
+                from services import ondemand
+
+                _ondemand = ondemand if ondemand.enabled() else False
+            except Exception:
+                _ondemand = False
+
+    if _ondemand:
+        _ondemand.wanted(role, up, url)
+
+    return up
+
 
 def _db():
     conn = sqlite3.connect(DB_FILE, timeout=10, check_same_thread=False)
@@ -63,7 +90,7 @@ def available():
     now = time.monotonic()
 
     if _state["up"] is not None and now - _state["checked"] < RECHECK:
-        return _state["up"]
+        return _demand("embed", _state["up"], config.EMBED_URL)
 
     try:
         response = requests.get(_root() + "/v1/models",
@@ -80,7 +107,7 @@ def available():
 
     _state.update(up=up, checked=now)
 
-    return up
+    return _demand("embed", up, config.EMBED_URL)
 
 
 def _embed(texts):
@@ -223,7 +250,7 @@ def reranker_available():
     now = time.monotonic()
 
     if _rerank["up"] is not None and now - _rerank["checked"] < RECHECK:
-        return _rerank["up"]
+        return _demand("rerank", _rerank["up"], config.RERANK_URL)
 
     try:
         response = requests.get(config.RERANK_URL.split("/v1/")[0] + "/v1/models",
@@ -240,7 +267,7 @@ def reranker_available():
 
     _rerank.update(up=up, checked=now)
 
-    return up
+    return _demand("rerank", up, config.RERANK_URL)
 
 
 def rerank(query, texts):

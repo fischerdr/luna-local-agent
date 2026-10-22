@@ -222,7 +222,7 @@ def start_services():
         from services import keys, lifecycle, settings as service_settings
 
         s = service_settings.load()
-        results = lifecycle.up(s, lifecycle.default_roles(), keys.token_source()[0])
+        results = lifecycle.up(s, lifecycle.default_roles(s), keys.token_source()[0])
     except Exception as e:
         print(f"The containers didn't come up ({e}) - starting without them.", file=sys.stderr)
         return None
