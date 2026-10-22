@@ -42,6 +42,11 @@ llama.cpp built here (`llama/install.sh`); see [Her reasoning](reasoning.md).
   [GPUs](#gpus)). AMD: `/dev/kfd` for ROCm, or `/dev/dri` for Vulkan.
 - Optional: a Hugging Face token, for gated models. Public ones don't need it.
 
+Luna's own Python can be newer than the host install allows (3.14, say):
+her voice (Kokoro needs 3.10-3.12) and llama.cpp then run in their
+containers. `install.sh` goes on with such a Python when Podman is there,
+and offers containers for both.
+
 ## Setting it up
 
 From the installer:

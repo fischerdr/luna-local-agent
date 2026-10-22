@@ -15,6 +15,9 @@ system:
 
 1. **Checks.** Python 3.10-3.13 (it offers to install 3.12 if there's
    none), your GPU, disk space.
+   With only a newer Python (3.14) and Podman installed, it goes on with
+   that one instead: her voice and model server then default to
+   [containers](containers.md), which bring the Python they need.
 2. **System packages** through your package manager (dnf, apt, pacman,
    zypper, brew or winget): PortAudio for audio, espeak-ng for the
    voice, git. On Linux it also offers grim, slurp, wl-clipboard and

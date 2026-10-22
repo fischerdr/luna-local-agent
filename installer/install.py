@@ -234,6 +234,8 @@ def check_system():
     ok(f"Python {v.major}.{v.minor} on {SYSTEM} {platform.machine()}")
     if v >= (3, 14):
         warn("Python 3.14+ is newer than some speech packages support yet - 3.12 is the safe choice")
+        if python_wants_containers(v):
+            print("    with Podman here, her voice and model server can run in containers instead")
     gpu, label = detect_gpu()
     ok(f"GPU: {label}")
     free = shutil.disk_usage(ROOT).free // (1 << 30)
@@ -526,7 +528,11 @@ def backend(state):
             options = [o for o in options if o[0] != "llama"]
         if SYSTEM != "Linux" or not shutil.which("podman"):
             options = [o for o in options if o[0] != "container"]
-        choice = choose("Which model server?", options, "lmstudio")
+        default = "lmstudio"
+        if python_wants_containers():
+            print("  Python %d.%d: the containers bring their own." % tuple(sys.version_info[:2]))
+            default = "container"
+        choice = choose("Which model server?", options, default)
     state["backend"] = choice
 
     if choice == "lmstudio":
@@ -1014,6 +1020,14 @@ def voice_container(state):
         state["voice"] = load_state().get("voice") or state.get("voice", {})
     note("voice", good, "in a container (luna-tts) on :8899" if good else "voice container setup stopped")
     return good
+
+
+def python_wants_containers(version=None):
+    """A Python newer than install.sh picks (3.13), on Linux with Podman:
+    the voice and the model server default to containers, which bring the
+    Python and builds they need."""
+    v = tuple((version or sys.version_info)[:2])
+    return v > (3, 13) and SYSTEM == "Linux" and bool(shutil.which("podman"))
 
 
 def kokoro_python_ok(version=None):

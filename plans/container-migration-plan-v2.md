@@ -78,6 +78,10 @@ git switch -c feat/containers 6d1ef9f
     `deploy/.env`, `deploy/api_key` and `deploy/hf_token`.
   - `embedmem.py`: P9's default-off on-demand hook only (approved
     2026-10-22).
+  - `installer/install.sh`: with no Python 3.10-3.13 but Podman and a newer
+    `python3`, go on with that Python instead of asking for sudo; the voice
+    and model server default to containers (approved 2026-10-22, widening
+    Luna's host Python range per section 14).
   - Docs, additive only, exactly as listed in section 11: `README.md`,
     `docs/README.md`, `docs/_Sidebar.md`, `docs/install.md`,
     `docs/configuration.md`, `docs/development.md`, `docs/knowledge.md`,

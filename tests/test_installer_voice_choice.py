@@ -96,6 +96,46 @@ class VoiceChoice(unittest.TestCase):
         self.assertIn("--voice container", out)
 
 
+class NewerPython(unittest.TestCase):
+    """With only a Python newer than 3.13 (install.sh goes on with it when
+    Podman is there), the model server defaults to containers too."""
+
+    def pick(self, version, podman, *argv):
+        install.ARGS = install.parser().parse_args(list(argv))
+        state = {}
+        with mock.patch.object(install, "SYSTEM", "Linux"), \
+             mock.patch.object(install.sys, "version_info", version), \
+             mock.patch.object(install.shutil, "which", side_effect=lambda n: "/usr/bin/podman"
+                               if podman and n == "podman" else None), \
+             mock.patch.object(install, "http_ok", return_value=False), \
+             mock.patch("builtins.input", return_value=""), \
+             contextlib.redirect_stdout(io.StringIO()):
+            install.backend(state)
+        return state["backend"]
+
+    def test_newer_python_and_podman(self):
+        self.assertEqual(self.pick((3, 14, 0), True, "--yes"), "container")
+        self.assertEqual(self.pick((3, 14, 0), True), "container")          # Enter takes it
+
+    def test_otherwise_mains_default(self):
+        self.assertEqual(self.pick((3, 12, 4), True, "--yes"), "lmstudio")
+        self.assertEqual(self.pick((3, 14, 0), False, "--yes"), "lmstudio")
+
+    def test_an_explicit_backend_wins(self):
+        with mock.patch.object(install, "run", return_value=True), \
+             mock.patch.object(install, "detect_gpu", return_value=("cuda", "NVIDIA")):
+            self.assertEqual(self.pick((3, 14, 0), True, "--backend", "llama"), "llama")
+
+    def test_the_rule(self):
+        with mock.patch.object(install, "SYSTEM", "Linux"), \
+             mock.patch.object(install.shutil, "which", return_value="/usr/bin/podman"):
+            self.assertTrue(install.python_wants_containers((3, 14)))
+            self.assertFalse(install.python_wants_containers((3, 13)))
+        with mock.patch.object(install, "SYSTEM", "Darwin"), \
+             mock.patch.object(install.shutil, "which", return_value="/usr/bin/podman"):
+            self.assertFalse(install.python_wants_containers((3, 14)))
+
+
 class KokoroRange(unittest.TestCase):
     def test_range(self):
         self.assertTrue(install.kokoro_python_ok((3, 10)))
