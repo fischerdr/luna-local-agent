@@ -133,8 +133,10 @@ def port_holder(port, ss=None):
 def env_dir():
     """Where the env-files go: your runtime dir, never the repo. They hold
     settings, not secrets."""
-    base = os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()
-    path = os.path.join(base, f"luna-services-{os.getuid()}")
+    path = os.environ.get("LUNA_RUN_DIR")       # a second, separate setup (tests/zero)
+    if not path:
+        base = os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()
+        path = os.path.join(base, f"luna-services-{os.getuid()}")
     os.makedirs(path, mode=0o700, exist_ok=True)
     return path
 
