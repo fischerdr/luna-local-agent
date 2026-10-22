@@ -717,8 +717,9 @@ def model(state):
 
     key, label, repo, file, size, mmproj, _least, ctx, lms_name = m
     if vram:
-        ok(f"{vram} GB to work with ({where})" + (f", {reserve:g} GB of it kept for the reranker"
-                                                   f"{' and her voice' if reserve > 1 else ''}" if reserve else ""))
+        kept = (f", {reserve:g} GB of it kept for the reranker" + (" and her voice" if reserve > 1 else "")
+                if reserve else "")
+        ok(f"{vram} GB to work with ({where}){kept}")
     else:
         warn(f"{where} - picking a small model that also runs on the CPU (slower)")
     print(f"  {label}: {size} GB{', with vision' if mmproj else ''}, {ctx // 1024}k context")
