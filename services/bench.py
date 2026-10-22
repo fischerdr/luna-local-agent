@@ -80,8 +80,8 @@ def recommend(total, used, rerank_need, rerank_cpu, voice_need=0, embed_need=0):
             why.append(f"the {name} on the CPU" + (" - no room left on the GPU" if gpu else ""))
     if out["RERANK_NGL"] == 0 and rerank_cpu is not None:
         slow = rerank_cpu >= RERANK_CPU_MAX
-        why.append(f"a rerank takes {rerank_cpu:.2f} s on the CPU" +
-                   (" - slow, so recall often keeps the embedding order" if slow else ""))
+        note = " - slow, so recall often keeps the embedding order" if slow else ""
+        why.append(f"a rerank takes {rerank_cpu:.2f} s on the CPU{note}")
     if gpu:
         why.append(f"GPU: about {int(total * (1 - SPARE) - room)} of {total} MiB in use, "
                    f"{int(SPARE * 100)}% kept free")
