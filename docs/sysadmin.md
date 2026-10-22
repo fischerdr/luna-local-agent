@@ -28,6 +28,8 @@ Things you can say at the desk:
 - "How much space is left on my home drive, and what's taking it?"
 - "Write me a script that backs up ~/notes to the server."
 
+With her backend [in containers](containers.md), the llama log is `podman logs luna-llama`, and her voice's is `podman logs luna-tts`.
+
 ## Health and crashes
 
 `system_health` answers "is anything wrong?" in one call. It starts

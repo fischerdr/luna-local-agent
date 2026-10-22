@@ -29,6 +29,7 @@ Powered by:
 
 - [Faster-Whisper](https://github.com/SYSTRAN/faster-whisper): speech to text
 - LM Studio or llama.cpp: the local model, with tool calling, picked automatically
+  (built here, or in containers: [readme-containers.md](readme-containers.md))
 - [kokoro-reader](https://github.com/fswolf/kokoro-reader): Kokoro TTS over local HTTP
 - MCP: OBS, Home Assistant, ComfyUI and the rest of the MCP ecosystem as her tools
 
@@ -178,11 +179,14 @@ asks what to call you and what you mostly want her for. After that,
 
 The installer asks before anything that touches your system, and can be run again any time to repair or update. The whole story, including running LM Studio or llama.cpp and the voice server, is in [docs/install.md](docs/install.md).
 
+On Linux with Podman, `./installer/install.sh --backend container --voice container` runs her model servers and voice in containers instead ([readme-containers.md](readme-containers.md)).
+
 ---
 
 # Documentation
 
 - [Install](docs/install.md): the installer, the model picked for your GPU, LM Studio or llama.cpp, the voice server, first run
+- [Containers](docs/containers.md): her model servers and voice in Podman containers, or on a GPU server on your network
 - [Configuration](docs/configuration.md): the settings page and presets, config.json, changing settings live, logging
 - [Controls and voice](docs/controls.md): keys, voice modes, speech detection, barge-in, wake word
 - [Tool calling](docs/tools.md): every tool, her own manual, turning them off, MCP servers

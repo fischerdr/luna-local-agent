@@ -354,6 +354,11 @@ GPU to itself, so **stop Luna's llama-server first**. llama-server only
 takes a vector at startup, so every condition gets a freshly started
 server, about 6 seconds each on a 6950 XT.
 
+With [the containers](containers.md), this still needs llama.cpp built
+here (`llama/install.sh`): stop the chat container first with
+`python -m services down chat`, and `python -m services up chat` brings
+it back afterwards.
+
 ```bash
 llama/install.sh                        # once more - it now also builds the vector generator
 python introspection/make_vectors.py    # one vector per concept, from your own model

@@ -26,8 +26,14 @@ system:
    next to this folder, in its own environment, with PyTorch for your GPU
    (NVIDIA, AMD with ROCm, Apple) or the CPU. If a voice server is
    already answering on :8899, it uses that instead.
+   Or, on Linux with Podman, in a container that brings its own Python
+   (`--voice container`); it suggests that when Kokoro can't use the
+   Python it was run with.
 5. **Her brain.** LM Studio (it tells you what to click), or llama.cpp
    built here (Linux) for the research features.
+   Or llama.cpp in Podman containers, with nothing built here
+   (`--backend container`), or on a GPU server on your network
+   (`--remote <address>`). See [Containers](containers.md).
 6. **Her model, picked for your machine.** It reads how much graphics
    memory you have and offers the biggest model that fits, with room for
    her context and her eyes:
@@ -106,6 +112,9 @@ default, and `--check` only runs the health check. Other options:
 `--voice install|url:http://host:port|skip`,
 `--gpu auto|cpu|cuda|rocm`, `--extras wakeword,mcp,portrait,...`,
 `--model auto|skip|4b|9b-q4|9b|27b...`.
+For containers and another machine there's also `--backend container|remote`,
+`--remote ADDR` and `--voice container`
+([how they go together](#containers-and-a-remote-server)).
 `python installer/uninstall.py` removes what it added and never touches
 your memory, history or settings.
 
@@ -114,6 +123,36 @@ macOS and Windows she installs and runs as a voice and text companion.
 The Linux-only parts (the global hotkey through evdev, Hyprland window
 tools, grim screenshots) say "not available" instead of working, and
 nobody has run her there much yet, so reports are welcome.
+
+### Containers and a remote server
+
+These are additions; every flag above keeps its meaning (`--backend llama`
+still builds llama.cpp here).
+
+| Flag | Values | |
+|---|---|---|
+| `--backend` | `container`, `remote` | her model in Podman containers here, or on another machine |
+| `--remote ADDR` | an IP address (v4 or v6) or a host name | the server; on its own it means `--backend remote` |
+| `--voice` | `container` | her voice in a container |
+| `--gpu` | `cpu`, `cuda`, `rocm` | which image the containers use (`mps` can't be used by one) |
+
+What goes with what:
+
+- `--remote` with any `--backend` but `remote` is an error, and so is
+  `--backend remote --yes` without `--remote` (asked for otherwise). This
+  machine's own address isn't remote: use `--backend container`.
+- Containers are Linux only; on Windows and macOS, use `--remote` or LM
+  Studio. No Podman isn't an error: setup says how to get it.
+- `--voice` takes `install`, `container`, `url:http://host:port` or `skip`;
+  anything else is an error rather than a quiet install.
+- With `container` or `remote`, the `embeddings` and `reranker` extras are
+  left out (the containers download theirs; the server has its own), and
+  extras with names it doesn't know are named.
+- `--remote` without `--voice` points her voice at the server's :8899.
+- `--gpu cuda` with no NVIDIA card, or `rocm` with no `/dev/kfd`, uses the
+  cpu image and says so.
+- `--check` with other flags only runs the check, and names what it ignored.
+- A flag given twice: the last one counts.
 
 ### By hand
 
@@ -242,6 +281,12 @@ URLs above (`http://192.168.1.50:8080/...`), then on the model machine:
 `embed_url` and `rerank_url` in the same block point at the embedding
 and reranker servers, if those run elsewhere too.
 
+**Or all of it on a GPU server.** `deploy/` runs her model, the
+embedder, the reranker and her voice there with Docker or Podman Compose,
+and `./installer/install.sh --remote <its address>` on Luna's machine
+writes these URLs, saves its key and checks each server
+([details](containers.md#a-gpu-server-on-your-network)).
+
 **Vision.** llama-server only takes images when it's started with the
 model's vision adapter, a separate `mmproj-*.gguf`. `start.sh` looks
 for one in the model's own folder, which is where LM Studio puts it,
@@ -268,6 +313,15 @@ probability of each token she produced, and the top alternatives
 whenever she was less than 90% sure. LM Studio doesn't expose this.
 See *Her reasoning* below for what the viewer does with it. Switch it
 off with `/set thoughts.token_probs false`.
+
+### Or in containers
+
+The same server, with nothing built here: `python -m services setup`
+(or the installer's `--backend container`) runs llama.cpp's own image in
+rootless Podman, reading this same `server.env`. Chat, the embedder and
+the reranker each get a container on the same ports with the same key, and
+`./start.sh` can start them with her. The introspection lab still needs
+the build above. See [Containers](containers.md).
 
 ### Recalling facts by meaning
 
@@ -339,6 +393,10 @@ everything else, these lines in `llama/server.env` free the most:
 A smaller quant of the chat model (Q4 instead of Q6 or Q8) saves the
 most of all.
 
+In containers, the embedder already runs on the CPU (`EMBED_NGL=0`), and
+`RERANK_NGL` in `services/services.local.env` moves the reranker; `python
+-m services bench` says which fits ([Small GPUs](containers.md#small-gpus)).
+
 ---
 
 # Running the Kokoro Server
@@ -347,6 +405,11 @@ Speech is synthesized by [kokoro-reader](https://github.com/fswolf/kokoro-reader
 rather than loading Kokoro in-process. One loaded model serves every app
 that asks, so the assistant starts in seconds instead of waiting on its
 own copy.
+
+Or in a container, with no Python of its own needed here:
+`python -m services setup tts` (or the installer's `--voice container`),
+then it runs on 127.0.0.1:8899 like the one below
+([Containers](containers.md)).
 
 ```bash
 git clone https://github.com/fswolf/kokoro-reader.git ~/kokoro-reader

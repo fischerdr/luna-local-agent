@@ -46,6 +46,21 @@ ai-voice/
 ├── grounding.py      # the grounding check: specifics in a reply that nothing she was given backs up
 ├── situation.py      # the live lines at the top of each turn: window, music, load, plugins, next reminder
 ├── llama/            # llama.cpp's own server - install.sh, start.sh, server.env
+│                     #   (a host build; the containers read the same server.env)
+├── services/         # her backend in rootless Podman containers - python -m services
+│   ├── __main__.py   #   the command line: setup, up, down, status, logs, bench, reset
+│   ├── settings.py   #   the env files read by bash, and each role's model
+│   ├── images.py     #   which image for this GPU, the pinned bases, our images by label
+│   ├── run.py        #   the podman run for a role, and its config hash
+│   ├── lifecycle.py  #   up (keep or make anew), down, status, ports, reset
+│   ├── keys.py       #   the key and the Hugging Face token as Podman secrets
+│   ├── setup.py      #   setup, setup tts, setup --server
+│   ├── bench.py      #   where the side models go on a small GPU
+│   ├── services.env  #   the containers' own settings (services.local.env is yours)
+│   ├── llama/        #   the llama image: Dockerfile, entrypoint.sh (ROLE=chat|embed|rerank)
+│   └── tts/          #   the voice image: Dockerfile (kokoro-reader, pinned)
+├── deploy/           # compose files for a GPU server on your network, .env.example
+├── readme-containers.md  # the containers, in short
 ├── embedmem.py       # recalling facts by meaning (and reranking), when those servers are up
 ├── livefeed.py       # the live monitor - /monitor, 127.0.0.1:8792 (and /portrait)
 ├── settings_web.py   # the settings page - /settings, 127.0.0.1:8792/settings/
@@ -200,6 +215,16 @@ the value everyone reads (against a temporary config.json).
 `tests/offline.py` keeps every test away from real servers; import it
 first in a new test file.
 
+`tests/test_services_*.py`, `tests/test_installer_options.py`,
+`tests/test_installer_remote.py`, `tests/test_installer_voice_choice.py`,
+`tests/test_launch_autostart.py` and `tests/test_compose_drift.py` cover
+the containers without Podman: settings and models, each `podman run`,
+image choice, secrets, keep-or-replace, the installer's flags, and that
+`./start.sh` with no `services` block does what it always did.
+`tests/containers/` runs the real thing, opt-in, on its own `luna-test-*`
+containers: `LUNA_CONTAINER_TESTS=1 python -m unittest discover -v tests/containers`
+([Containers](containers.md#tests)).
+
 Run them after touching tools, the turn code, the permission checks or
 anything that stops her.
 
@@ -210,4 +235,5 @@ anything that stops her.
 ```bash
 python3 kokoro-say.py                 # read the clipboard aloud through
                                       # the TTS server - bind it to a key
+python -m services status             # her backend containers, if you use them
 ```

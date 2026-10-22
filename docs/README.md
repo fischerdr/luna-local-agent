@@ -3,6 +3,7 @@
 Everything the README only touches on, one subject per page.
 
 - [Install](install.md): the installer, the model picked for your GPU, LM Studio or llama.cpp, the voice server, first run
+- [Containers](containers.md): her model servers and voice in Podman containers, or on a GPU server on your network
 - [Configuration](configuration.md): the settings page and presets, config.json, changing settings live, logging
 - [Controls and voice](controls.md): keys, voice modes, speech detection, barge-in, wake word
 - [Tool calling](tools.md): every tool, her own manual, turning them off, MCP servers

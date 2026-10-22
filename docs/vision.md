@@ -14,6 +14,7 @@ or on llama-server the model's `mmproj` file (see *Or llama.cpp
 directly*). When the server says the loaded model can't take images,
 `look_at_screen` isn't offered at all, and the tools pane says what's
 missing.
+In [containers](containers.md#models), the same `MMPROJ` rules apply.
 
 ```json
 "vision": {

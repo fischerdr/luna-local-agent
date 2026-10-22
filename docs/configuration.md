@@ -76,6 +76,10 @@ code until you set it, and `config.example.json` shows it so you can.
 A syntax error in either file is reported and skipped rather than being
 fatal: hand-editing them is the whole point of their being JSON.
 
+One block isn't in `config.example.json`: `"services": {"autostart": true}`
+starts her backend containers with her, and `"stop_on_exit": false`
+leaves them running after ([Containers](containers.md#starting-with-luna)).
+
 ## Changing settings without leaving the terminal
 
 ### The settings page
