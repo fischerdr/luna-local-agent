@@ -169,5 +169,31 @@ class Autostart(unittest.TestCase):
                 self.assertIsNone(launch.start_services())
 
 
+class RemoteClient(unittest.TestCase):
+    """What install.sh --remote writes: Luna's machine starts nothing."""
+
+    CFG = {"llm": {"backend": "llama", "autostart": False,
+                   "llama_url": "http://192.168.1.50:8080/v1/chat/completions",
+                   "embed_url": "http://192.168.1.50:8081/v1/embeddings",
+                   "rerank_url": "http://192.168.1.50:8082/v1/rerank"},
+           "tts": {"url": "http://192.168.1.50:8899"}}
+    STATE = {"backend": "remote", "voice": {"mode": "external", "url": "http://192.168.1.50:8899"}}
+
+    def test_no_local_llama_even_with_a_build_here_and_the_server_down(self):
+        with mock.patch.object(launch, "settings", return_value=self.CFG), \
+             mock.patch.object(launch, "model_up", return_value=False), \
+             mock.patch.object(launch.os, "access", return_value=True), \
+             mock.patch.object(launch.os.path, "exists", return_value=True), \
+             mock.patch.object(launch.subprocess, "Popen") as popen:
+            self.assertIsNone(launch.start_llama(self.STATE))
+        popen.assert_not_called()
+
+    def test_nothing_started(self):
+        calls = run_main(launch, self.CFG, self.STATE)
+        self.assertNotIn("start_voice", calls)
+        self.assertNotIn("services up", calls)
+        self.assertIn("main.py", calls)
+
+
 if __name__ == "__main__":
     unittest.main()

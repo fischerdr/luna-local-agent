@@ -274,5 +274,33 @@ class EnvLines(ModelFiles):
             settings.env_lines("chat", s, m)
 
 
+class DownloadSize(unittest.TestCase):
+    TREE = [{"type": "file", "path": "README.md", "size": 100},
+            {"type": "file", "path": "Qwen_Qwen3.5-9B-Q4_K_M.gguf", "size": 6_200_000_000},
+            {"type": "file", "path": "Qwen_Qwen3.5-9B-Q8_0.gguf", "size": 9_800_000_000},
+            {"type": "file", "path": "mmproj-Qwen_Qwen3.5-9B-f16.gguf", "size": 900_000_000},
+            {"type": "file", "path": "big/Big-Q4_K_M-00001-of-00002.gguf", "size": 2},
+            {"type": "file", "path": "big/Big-Q4_K_M-00002-of-00002.gguf", "size": 3}]
+
+    def size(self, ref, tree=None, status=200):
+        from unittest import mock
+
+        from services import setup
+
+        get = mock.Mock(return_value=mock.Mock(status_code=status, json=lambda: tree or self.TREE))
+        return setup.hf_size(ref, get=get)
+
+    def test_the_quant_asked_for(self):
+        self.assertEqual(self.size("bartowski/Qwen_Qwen3.5-9B-GGUF:Q8_0"), 9_800_000_000)
+
+    def test_default_quant_and_split_parts(self):
+        tree = [f for f in self.TREE if f["path"].startswith("big/")]
+        self.assertEqual(self.size("org/Big-GGUF", tree), 5)
+
+    def test_unknown(self):
+        self.assertIsNone(self.size("org/x:Q2_K"))
+        self.assertIsNone(self.size("org/x:Q8_0", status=404))
+
+
 if __name__ == "__main__":
     unittest.main()

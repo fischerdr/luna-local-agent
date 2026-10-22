@@ -77,6 +77,30 @@ def set_env(path, key, value):
         f.write(text)
 
 
+def hf_size(ref, get=None):
+    """What an -hf model downloads, in bytes (all its split parts), from
+    Hugging Face's file list - None when it can't be told."""
+    import requests
+
+    repo, _, quant = ref.partition(":")
+    quant = (quant or "Q4_K_M").lower()           # -hf's own default
+    try:
+        r = (get or requests.get)(f"https://huggingface.co/api/models/{repo}/tree/main?recursive=true", timeout=10)
+        files = r.json() if r.status_code == 200 else []
+    except (requests.RequestException, ValueError):
+        return None
+    sizes = [f.get("size") or 0 for f in files if isinstance(f, dict)
+             and f.get("path", "").lower().endswith(".gguf") and "mmproj" not in f["path"].lower()
+             and quant in os.path.basename(f["path"]).lower()]
+    return sum(sizes) or None
+
+
+def described(ref):
+    """An -hf model, with its download size when Hugging Face says."""
+    size = hf_size(ref)
+    return f"{ref} ({size / 1e9:.1f} GB, downloaded on the first up)" if size else ref
+
+
 def _gguf_dirs():
     """Folders here that already hold GGUFs: llama/models, LM Studio's."""
     found = []
@@ -117,7 +141,7 @@ def models(s, a):
     reread if they changed."""
     try:
         settings.resolve("chat", s)
-        ok(f"chat model: {s['MODEL_HF'] or s['MODEL'] or s['MODEL_MATCH']}")
+        ok(f"chat model: {described(s['MODEL_HF']) if s['MODEL_HF'] else s['MODEL'] or s['MODEL_MATCH']}")
         return side_models(s, a) if s["LUNA_MODELS_DIR"] else s
     except settings.SettingsError as e:
         warn(str(e).splitlines()[0])
@@ -139,7 +163,7 @@ def models(s, a):
     hf = a.text("A model from Hugging Face instead, as <user>/<repo>:<quant> (empty = skip):")
     if hf:
         set_env(LOCAL_ENV, "MODEL_HF", hf)
-        ok(f"MODEL_HF={hf} - downloaded on the first up, into the luna-models volume")
+        ok(f"MODEL_HF={described(hf)} - into the luna-models volume")
         return settings.load()
     warn("no chat model yet - set MODEL_HF or LUNA_MODELS_DIR in services/services.local.env")
     return s
@@ -218,7 +242,7 @@ def setup(a, gpu="auto"):
     for role in LLAMA_ROLES[1:]:
         try:
             m, why = settings.resolve(role, s)
-            ok(f"{role}: {m.label()}" if m else f"{role}: skipped - {why}")
+            ok(f"{role}: {described(m.hf) if m.hf else m.label()}" if m else f"{role}: skipped - {why}")
         except settings.SettingsError as e:
             warn(str(e))
 

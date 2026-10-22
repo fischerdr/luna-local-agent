@@ -51,6 +51,11 @@ TORCH_INDEX = {
     "cuda13": "https://download.pytorch.org/whl/cu130",
 }
 
+# The AMD GPUs upstream's rocm image is built for (ROCM_DOCKER_ARCH in
+# .devops/rocm.Dockerfile at the pinned build).
+ROCM_TARGETS = ("gfx908", "gfx90a", "gfx942", "gfx1030", "gfx1100", "gfx1101", "gfx1102",
+                "gfx1150", "gfx1151", "gfx1200", "gfx1201")
+
 CDI_SYSTEM = "/etc/cdi/nvidia.yaml"
 CDI_USER = os.path.expanduser("~/.config/cdi/nvidia.yaml")
 CDI_COMMAND = f"nvidia-ctk cdi generate --output={CDI_USER}"
@@ -76,8 +81,28 @@ def cdi_spec():
     return None
 
 
+def rocm_gpus():
+    """The gfx targets rocminfo reports for this machine's GPUs (none without it)."""
+    if not shutil.which("rocminfo"):
+        return []
+    try:
+        out = subprocess.run(["rocminfo"], capture_output=True, text=True, timeout=20).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return sorted(set(re.findall(r"^\s*Name:\s*(gfx[0-9a-f]+)\s*$", out, re.M)))
+
+
+def rocm_note(gpus):
+    """A line to say when this GPU isn't one the rocm image was built for."""
+    missing = [g for g in gpus if g not in ROCM_TARGETS]
+    if not missing:
+        return None
+    return (f"this GPU is {', '.join(missing)}, which upstream's rocm image isn't built for "
+            f"(it has {', '.join(ROCM_TARGETS)}) - LLAMA_BACKEND=vulkan works on any AMD card")
+
+
 def image_for_host(override="auto", cuda=cuda_major, cdi=cdi_spec, exists=os.path.exists,
-                   arch=platform.machine):
+                   arch=platform.machine, gfx=rocm_gpus):
     """(backend, note): the backend to use here, and a line to say about it
     (the CDI command, an override that can't work), or None."""
     override = (override or "auto").lower()
@@ -89,7 +114,7 @@ def image_for_host(override="auto", cuda=cuda_major, cdi=cdi_spec, exists=os.pat
             return "cpu", f"{override} asked for, but there's no NVIDIA GPU here - using cpu"
         if override == "rocm" and not exists("/dev/kfd"):
             return "cpu", "rocm asked for, but there's no /dev/kfd here - using cpu"
-        return override, None
+        return override, rocm_note(gfx()) if override == "rocm" else None
     if major is not None:
         if cdi():
             return ("cuda13" if major >= 13 else "cuda"), None
@@ -97,7 +122,9 @@ def image_for_host(override="auto", cuda=cuda_major, cdi=cdi_spec, exists=os.pat
                        f"then run setup again:\n    {CDI_COMMAND}\n  (if that needs root: "
                        f"sudo nvidia-ctk cdi generate --output={CDI_SYSTEM})")
     if exists("/dev/kfd"):
-        return ("vulkan" if arch() in ("aarch64", "arm64") else "rocm"), None
+        if arch() in ("aarch64", "arm64"):
+            return "vulkan", None
+        return "rocm", rocm_note(gfx())
     if exists("/dev/dri"):
         return "vulkan", None
     return "cpu", None

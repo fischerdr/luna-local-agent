@@ -6,6 +6,7 @@ a pretend GPU, CDI spec and /dev - nothing here looks at the real ones.
 import os
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -14,9 +15,9 @@ from tests.offline import FAKE  # noqa: E402,F401  (first: no real servers)
 from services import images  # noqa: E402
 
 
-def pick(override="auto", cuda=None, cdi=None, devs=(), arch="x86_64"):
+def pick(override="auto", cuda=None, cdi=None, devs=(), arch="x86_64", gfx=("gfx1030",)):
     return images.image_for_host(override, cuda=lambda: cuda, cdi=lambda: cdi,
-                                 exists=lambda p: p in devs, arch=lambda: arch)
+                                 exists=lambda p: p in devs, arch=lambda: arch, gfx=lambda: list(gfx))
 
 
 class Detection(unittest.TestCase):
@@ -42,6 +43,24 @@ class Detection(unittest.TestCase):
 
     def test_nothing_is_cpu(self):
         self.assertEqual(pick(), ("cpu", None))
+
+
+class Rocm(unittest.TestCase):
+    def test_a_gpu_the_image_has(self):
+        self.assertEqual(pick(devs=("/dev/kfd",), gfx=("gfx1100",)), ("rocm", None))
+
+    def test_a_gpu_it_wasnt_built_for_says_so(self):
+        backend, note = pick(devs=("/dev/kfd",), gfx=("gfx1031",))
+        self.assertEqual(backend, "rocm")
+        self.assertIn("gfx1031", note)
+        self.assertIn("vulkan", note)
+        self.assertIsNotNone(pick("rocm", devs=("/dev/kfd",), gfx=("gfx803",))[1])
+
+    def test_reading_rocminfo(self):
+        out = "Agent 1\n  Name:                    AMD Ryzen\nAgent 2\n  Name:                    gfx1030\n"
+        with mock.patch.object(images.shutil, "which", return_value="/usr/bin/rocminfo"), \
+             mock.patch.object(images.subprocess, "run", return_value=mock.Mock(stdout=out)):
+            self.assertEqual(images.rocm_gpus(), ["gfx1030"])
 
 
 class Override(unittest.TestCase):
