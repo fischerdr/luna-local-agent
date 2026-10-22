@@ -86,13 +86,39 @@ def _gguf_dirs():
     return found
 
 
+def pick_file(d, a):
+    """One chat GGUF from a folder, by number. "" when there's none or
+    nobody to ask (--yes doesn't guess which model you want)."""
+    found = [p for p in settings.find_host("*", d)
+             if not any(w in os.path.basename(p).lower() for w in ("embedding", "reranker"))]
+    if not found or a.yes:
+        return ""
+    print("  GGUFs there:")
+    for i, p in enumerate(found, 1):
+        print(f"    {i}. {os.path.relpath(p, d)}  ({os.path.getsize(p) / 1e9:.1f} GB)")
+    pick = a.text("Which is her chat model? (number, empty = none)")
+    return found[int(pick) - 1] if pick.isdigit() and 1 <= int(pick) <= len(found) else ""
+
+
+def side_models(s, a):
+    """The embedding and reranker files already in LUNA_MODELS_DIR, used
+    where they are instead of a second copy by -hf."""
+    for role, hf_key, match_key in (("embed", "EMBED_HF", "EMBED_MATCH"), ("rerank", "RERANK_HF", "RERANK_MATCH")):
+        if not s[hf_key] or not s[match_key]:
+            continue
+        found = settings.find_host(s[match_key], settings._models_dir(s))
+        if len(found) == 1 and a.ask(f"{role}: use {os.path.basename(found[0])} from there (no download)?"):
+            set_env(LOCAL_ENV, hf_key, "")
+    return settings.load()
+
+
 def models(s, a):
     """Step 8: a chat model the container can reach. Returns the settings,
     reread if they changed."""
     try:
         settings.resolve("chat", s)
         ok(f"chat model: {s['MODEL_HF'] or s['MODEL'] or s['MODEL_MATCH']}")
-        return s
+        return side_models(s, a) if s["LUNA_MODELS_DIR"] else s
     except settings.SettingsError as e:
         warn(str(e).splitlines()[0])
     for d in _gguf_dirs():
@@ -101,10 +127,15 @@ def models(s, a):
             s = settings.load()
             try:
                 settings.resolve("chat", s)
-                ok(f"LUNA_MODELS_DIR={d} - in services/services.local.env")
-                return s
             except settings.SettingsError as e:
-                warn(str(e))
+                warn(str(e).splitlines()[0])
+                path = pick_file(d, a)
+                if not path:
+                    continue
+                set_env(LOCAL_ENV, "MODEL", path)
+                s = settings.load()
+            ok(f"LUNA_MODELS_DIR={d} - in services/services.local.env")
+            return side_models(s, a)
     hf = a.text("A model from Hugging Face instead, as <user>/<repo>:<quant> (empty = skip):")
     if hf:
         set_env(LOCAL_ENV, "MODEL_HF", hf)
