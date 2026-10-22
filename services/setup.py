@@ -250,6 +250,9 @@ def setup(a, gpu="auto"):
         from services.bench import bench
 
         bench(a)
+        # bench may have moved the voice to the CPU: its image, then.
+        if lifecycle.voice_state().get("container") == CONTAINER["tts"]:
+            voice_image(a, settings.load())
     autostart(a)
     print("  Next: python -m services up" + ("" if config_services().get("autostart") else ", or ./start.sh"))
     return True
@@ -302,6 +305,29 @@ def save_voice(url):
         json.dump(state, f, indent=2)
 
 
+def voice_image(a, s):
+    """The voice image for where TTS_DEVICE (and the GPU) put it, built if
+    it's missing. True when it's there."""
+    backend, _ = images.image_for_host(s["LLAMA_BACKEND"])
+    device = lifecycle.tts_device(s, backend)
+    build = images.tts_backend(backend) if device == "cuda" else "cpu"
+    ok(f"voice on the {device}" + ("" if device == "cuda" else " - faster than real time"))
+    if images.find(build, kind="tts"):
+        ok(f"image {images.tag(build, 'tts')} is current")
+        return True
+    cmd = images.build_cmd(build, "tts")
+    show(cmd)
+    size = "about 1.6 GB" if build == "cpu" else "about 5 GB, CUDA's libraries included"
+    if not a.ask(f"Build the voice image ({size})?"):
+        return False
+    sys.stdout.flush()
+    if subprocess.call(cmd) != 0:
+        warn("the build failed - the lines above say why")
+        return False
+    ok(f"built {images.tag(build, 'tts')}")
+    return True
+
+
 def setup_tts(a):
     """Set up her voice in a container (setup tts). True when it can come up."""
     print("Luna's voice in a container - setup")
@@ -310,25 +336,8 @@ def setup_tts(a):
         warn(problem)
         print("  Without Podman, the installer sets her voice up on the host: ./installer/install.sh")
         return False
-    s = settings.load()
-    backend, _ = images.image_for_host(s["LLAMA_BACKEND"])
-    device = lifecycle.tts_device(s, backend)
-    build = images.tts_backend(backend) if device == "cuda" else "cpu"
-    ok(f"voice on the {device}" + ("" if device == "cuda" else " - faster than real time"))
-
-    if images.find(build, kind="tts"):
-        ok(f"image {images.tag(build, 'tts')} is current")
-    else:
-        cmd = images.build_cmd(build, "tts")
-        show(cmd)
-        size = "about 1.6 GB" if build == "cpu" else "about 5 GB, CUDA's libraries included"
-        if not a.ask(f"Build the voice image ({size})?"):
-            return False
-        sys.stdout.flush()
-        if subprocess.call(cmd) != 0:
-            warn("the build failed - the lines above say why")
-            return False
-        ok(f"built {images.tag(build, 'tts')}")
+    if not voice_image(a, settings.load()):
+        return False
 
     if lifecycle.podman("volume", "exists", VOLUME["tts"]).returncode:
         show(["podman", "volume", "create", VOLUME["tts"]])

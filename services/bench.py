@@ -52,25 +52,51 @@ def vram(run=subprocess.run):
     return None
 
 
-def recommend(total, used, rerank_need, rerank_cpu):
-    """(EMBED_NGL, RERANK_NGL, RERANK) for these numbers, and why.
+def recommend(total, used, rerank_need, rerank_cpu, voice_need=0):
+    """What goes where, for these numbers: ({setting: value}, [why]).
 
-    total and used are MiB with chat loaded (used=None without a GPU);
-    rerank_need is the reranker's MiB on the GPU; rerank_cpu the seconds a
-    24-candidate rerank takes on the CPU (None if it couldn't be timed)."""
-    if total and used is not None and used + rerank_need <= total * (1 - SPARE):
-        return (0, 99, "auto"), (f"chat and the reranker fit: {used + rerank_need} of {total} MiB, "
-                                 f"{int(SPARE * 100)}% to spare - reranker on the GPU")
-    tight = f"no room on the GPU ({used} + {rerank_need} of {total} MiB)" if total else "no GPU"
-    if rerank_cpu is not None and rerank_cpu < RERANK_CPU_MAX:
-        return (0, 0, "auto"), f"{tight}; a rerank takes {rerank_cpu:.2f} s on the CPU - reranker on the CPU"
-    took = f"{rerank_cpu:.2f} s" if rerank_cpu is not None else "too long to time"
-    return (0, 0, "off"), (f"{tight}, and a rerank on the CPU takes {took} - reranker off; recall keeps "
-                           "the embedding order")
+    total and used are MiB, used counting chat but neither the reranker nor
+    the voice (used=None without a GPU); rerank_need and voice_need are
+    what each takes on the GPU (voice_need 0 when it isn't asking for it);
+    rerank_cpu the seconds a 24-candidate rerank takes on the CPU, or None.
+    The embedder is always on the CPU. When it's tight the voice goes to
+    the CPU first - Kokoro is faster than real time there - then the
+    reranker; the reranker is off only when the CPU is too slow for it."""
+    out, why = {"EMBED_NGL": 0}, []
+    budget = total * (1 - SPARE) if total else 0
+    gpu = total and used is not None
+    if gpu and used > budget:
+        why.append(f"chat alone takes about {used} of {total} MiB - everything else stays off the GPU; "
+                   "if it still runs out, a smaller model (the installer's --model 4b) or a lower NGL")
+    room = budget - used if gpu else 0
+    if voice_need:
+        if room >= voice_need + rerank_need or (room >= voice_need and rerank_need == 0):
+            why.append(f"the voice fits on the GPU ({voice_need} MiB)")
+            room -= voice_need
+        else:
+            out["TTS_DEVICE"] = "cpu"
+            why.append("the voice goes on the CPU (it's faster than real time there), leaving the GPU to chat")
+    if gpu and room >= rerank_need:
+        out.update(RERANK_NGL=99, RERANK="auto")
+        why.append(f"the reranker fits on the GPU: {total - int(room) + rerank_need} of {total} MiB used, "
+                   f"{int(SPARE * 100)}% kept free")
+    elif rerank_cpu is not None and rerank_cpu < RERANK_CPU_MAX:
+        out.update(RERANK_NGL=0, RERANK="auto")
+        why.append(("no room for the reranker on the GPU; " if gpu else "no GPU; ")
+                   + f"a rerank takes {rerank_cpu:.2f} s on the CPU - reranker on the CPU")
+    else:
+        took = f"{rerank_cpu:.2f} s" if rerank_cpu is not None else "too long to time"
+        out.update(RERANK_NGL=0, RERANK="off")
+        why.append(f"a rerank on the CPU takes {took} - reranker off; recall keeps the embedding order")
+    return out, why
+
+
+VOICE_MIB = 1000        # Kokoro on CUDA: torch's context, the model and its working memory
 
 
 def model_mib(m, s):
-    """A role's model size in MiB, as near as we can tell (0 unknown)."""
+    """A role's model size in MiB, as near as we can tell (0 unknown): the
+    file, or - not downloaded yet - what Hugging Face says it is."""
     if m.host_mount:
         root = os.path.realpath(os.path.expanduser(s["LUNA_MODELS_DIR"]))
         path = os.path.join(root, m.file[len(settings.HOST_MODELS) + 1:])
@@ -80,7 +106,11 @@ def model_mib(m, s):
                              f"du -Lbc $(find /models -iname '*{m.hf.split('/')[-1].split(':')[0]}*' "
                              "-name '*.gguf' ! -iname '*mmproj*' 2>/dev/null) 2>/dev/null | tail -1")
     nums = re.findall(r"^\d+", found.stdout.strip())
-    return int(nums[0]) // MIB if nums else 0
+    if nums and int(nums[0]):
+        return int(nums[0]) // MIB
+    from services.setup import hf_size
+
+    return (hf_size(m.hf) or 0) // MIB
 
 
 def spare_port():
@@ -160,30 +190,39 @@ def bench(a, out=print):
         return True
 
     mem = vram()
-    chat_up = lifecycle.containers().get(CONTAINER["chat"], {}).get("state") == "running"
+    found = lifecycle.containers()
+    running = {role: found.get(CONTAINER[role], {}).get("state") == "running" for role in CONTAINER}
     total, used = mem if mem else (None, None)
-    if mem and not chat_up:
-        try:
-            chat, _ = settings.resolve("chat", s)
-            used += model_mib(chat, s) + int(s["CTX"] or 16384) // 20 + 512
-            out(f"  (chat isn't running: {used} MiB counted for it, from its size and CTX)")
-        except settings.SettingsError:
-            pass
-    if mem and chat_up and lifecycle.containers().get(CONTAINER["rerank"], {}).get("state") == "running" \
-            and int(s["RERANK_NGL"] or 0) > 0:
-        used -= model_mib(rerank, s) + 400     # the reranker already on the GPU is counted in used
+    backend, _ = images.image_for_host(s["LLAMA_BACKEND"])
+    voice_gpu = lifecycle.voice_state().get("container") == CONTAINER["tts"] and \
+        lifecycle.tts_device(s, backend) == "cuda"
     need = model_mib(rerank, s) + 400
+    if mem:
+        if not running["chat"]:
+            try:
+                chat, _ = settings.resolve("chat", s)
+                used += model_mib(chat, s) + int(s["CTX"] or 16384) // 20 + 512
+                out(f"  (chat isn't running: {used} MiB counted for it, from its size and CTX)")
+            except settings.SettingsError:
+                pass
+        # What's on the GPU now besides chat is placed again, so it isn't counted.
+        if running["rerank"] and int(s["RERANK_NGL"] or 0) > 0:
+            used -= need
+        if running["tts"] and voice_gpu:
+            used -= VOICE_MIB
     cpu = cpu_timing("rerank", s, rerank, key, out)
-    (embed_ngl, rerank_ngl, switch), reason = recommend(total, used, need, cpu)
-    out(f"  {reason}")
-    out(f"  EMBED_NGL={embed_ngl} RERANK_NGL={rerank_ngl}" + (" RERANK=off" if switch == "off" else ""))
-    if not a.ask("Write that down (services/services.local.env, and llama/server.local.env for RERANK=off)?"):
+    place, why = recommend(total, used, need, cpu, VOICE_MIB if voice_gpu else 0)
+    for line in why:
+        out(f"  {line}")
+    out("  " + " ".join(f"{k}={v}" for k, v in place.items()))
+    if not a.ask("Write that down (services/services.local.env, and llama/server.local.env for RERANK)?"):
         return True
     from services.setup import LOCAL_ENV, set_env
 
-    set_env(LOCAL_ENV, "EMBED_NGL", str(embed_ngl))
-    set_env(LOCAL_ENV, "RERANK_NGL", str(rerank_ngl))
-    if switch == "off":
-        set_env(os.path.join(LLAMA_DIR, "server.local.env"), "RERANK", "off")
+    for k in ("EMBED_NGL", "RERANK_NGL", "TTS_DEVICE"):
+        if k in place:
+            set_env(LOCAL_ENV, k, str(place[k]))
+    if place.get("RERANK") == "off" or s["RERANK"] == "off":
+        set_env(os.path.join(LLAMA_DIR, "server.local.env"), "RERANK", place["RERANK"])
     out("  written - python -m services up applies it")
     return True

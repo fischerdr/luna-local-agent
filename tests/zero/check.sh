@@ -27,7 +27,7 @@ echo "Setup"
 check "llama/.api_key, readable only by you" key_private
 check "config.json: services.autostart" grep -q '"autostart": true' config.json
 check "install.json: the voice is the container" python3 -c \
-    'import json, sys; v = json.load(open("install.json")).get("voice", {}); sys.exit(v.get("container") != "luna-tts")'
+    'import json, sys; v = json.load(open("install.json")).get("voice", {}); sys.exit(v.get("container") != "luna-tts")' 2>/dev/null
 
 echo "Containers"
 status=$("$PY" -m services status 2>&1)
@@ -54,7 +54,7 @@ check "chat refuses without the key ($code)" test "$code" = 401
 reply=$(curl -s --max-time 300 "${auth[@]}" http://127.0.0.1:8080/v1/chat/completions \
     -d '{"messages":[{"role":"user","content":"Say hello in five words."}],"max_tokens":32,"reasoning_budget_tokens":0}')
 check "chat answers" python3 -c \
-    'import json,sys; m=json.loads(sys.argv[1])["choices"][0]["message"]; sys.exit(not (m.get("content") or "").strip())' "$reply"
+    'import json,sys; m=json.loads(sys.argv[1])["choices"][0]["message"]; sys.exit(not (m.get("content") or "").strip())' "$reply" 2>/dev/null
 dim=$(curl -s --max-time 60 "${auth[@]}" http://127.0.0.1:8081/v1/embeddings -d '{"input":"hello"}' |
     python3 -c 'import json,sys; print(len(json.load(sys.stdin)["data"][0]["embedding"]))' 2>/dev/null)
 check "embeddings (${dim:-none} wide)" test "${dim:-0}" -gt 0
