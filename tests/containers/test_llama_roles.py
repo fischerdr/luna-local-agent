@@ -73,6 +73,17 @@ class LlamaRoles(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(len(r.json()["data"][0]["embedding"]), 1024)
 
+    def test_downloads_land_in_the_volume(self):
+        # LLAMA_CACHE (and HF_HUB_CACHE) point -hf at /models, the volume:
+        # a later llama.cpp that ignored both would download elsewhere.
+        found = podman("run", "--rm", "-v", f"{support.MODELS}:/models:ro", "--entrypoint", "ls",
+                       support.build_llama(), "/models").stdout.split()
+        for hf in support.models().values():
+            if hf.startswith("ggml-org/SmolVLM"):
+                continue                     # only downloaded by LUNA_CONTAINER_TESTS=full
+            org, repo = hf.split(":")[0].split("/")
+            self.assertIn(f"models--{org}--{repo}", found)
+
     def test_rerank_puts_the_answer_first(self):
         docs = ["The user likes jazz.", "The user has a cat named Miso.", "Paris is in France."]
         r = requests.post(url("rerank", "/v1/rerank"), headers=self.auth(), timeout=30,

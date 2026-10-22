@@ -37,7 +37,12 @@ if [ -s /run/secrets/hf_token ]; then
 fi
 
 # -hf downloads land in the volume, so they survive a new container.
+# LLAMA_CACHE is llama-server's own (tools/server/README.md; first in
+# common/hf-cache.cpp's lookup); HF_HUB_CACHE, Hugging Face's standard
+# name, is next in that lookup - there in case a later build drops the
+# first.
 export LLAMA_CACHE="${LLAMA_CACHE:-/models}"
+export HF_HUB_CACHE="${HF_HUB_CACHE:-$LLAMA_CACHE}"
 
 if [ -n "${LUNA_HF:-}" ]; then
     model=(-hf "$LUNA_HF")

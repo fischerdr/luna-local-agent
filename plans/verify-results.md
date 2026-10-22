@@ -29,7 +29,7 @@ The host build (`llama/install.sh`) tracks llama.cpp master (`git clone
 | Check | Result |
 |---|---|
 | Flags in `--help` | `-hf`, `HF_TOKEN`, `--api-key-file`, `--embeddings`, `--reranking`, `--pooling`, `--no-mmproj`, `--mmproj`, `--mmproj-url`, `--cors-origins`, `--slot-save-path`, `--reasoning-format`, `--reasoning-budget`, `--ctx-checkpoints`, `--kv-unified`, `-fa`, `--jinja`, `--alias`, `--metrics`, `--slots`, `-np`, `-ub`: all present. |
-| `LLAMA_CACHE` | **Not in `--help`**, but `libllama-common.so` reads it (along with `HF_HUB_CACHE`, `HF_HOME` and `XDG_CACHE_HOME`). Tested: `-e LLAMA_CACHE=/models` with `-hf` puts the download in the volume, in Hugging Face's cache layout (`/models/models--<org>--<repo>/snapshots/...`). |
+| `LLAMA_CACHE` | Not in `--help`, but **documented** in llama-server's own README at the pinned commit (`tools/server/README.md`: "Cached models (controlled by the `LLAMA_CACHE` environment variable)"). `-hf` downloads (`common/hf-cache.cpp`) look in order at `LLAMA_CACHE`, `HF_HUB_CACHE`, `HUGGINGFACE_HUB_CACHE`, `HF_HOME/hub`, `XDG_CACHE_HOME/huggingface/hub`, then `~/.cache/huggingface/hub`. The entrypoint sets `LLAMA_CACHE` and `HF_HUB_CACHE` to `/models` (your decision, 2026-10-22); `test_llama_roles` checks that downloads land in the volume. Layout: `/models/models--<org>--<repo>/snapshots/...`. |
 | Entrypoint | `/app/llama-server`; working directory `/app`; env `LLAMA_ARG_HOST=0.0.0.0`, `LLAMA_ARG_PORT=8080`. Ubuntu 24.04, runs as root. |
 | Tools | `bash`, `awk` and `curl` (`/usr/bin/curl`) are present; `wget` isn't. |
 | Upstream `HEALTHCHECK` | Dropped when Podman builds in OCI format, which is its default. Health checks go on `podman run --health-cmd` and in compose. |
