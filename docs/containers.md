@@ -186,6 +186,11 @@ GPU at all, so it takes no video memory.
 
 ## Small GPUs
 
+With containers, the installer's model pick keeps room on the GPU for
+what shares it: about 1 GB for the reranker, and 1 GB more when the voice
+runs on an NVIDIA card. On 8 GB that's Qwen3.5 4B (Q6_K, with vision)
+rather than the 9B, which is one `--model 9b-q4` away.
+
 On an 8 GB card, a 4B chat model, the embedder and the reranker fit
 together; a bigger model or a long `CTX` may not. The embedder runs on
 the CPU anyway: a query is a few dozen tokens, about 30 ms there.
@@ -356,7 +361,10 @@ tests/zero/reset.sh --install --interactive  # the same, answering the installer
 tests/zero/check.sh                          # after any install: does everything answer?
 ```
 
-It removes, with **no backup**: every gitignored file in the checkout
+Inside the checkout it asks once; everything outside it is asked about
+group by group, default no (`--outside` says yes to all of them), and
+`--install` asks before the installer writes outside it. It removes, with
+**no backup**: every gitignored file in the checkout
 (`.venv`, `install.json`, `llama/.api_key`, the `.local.env` files,
 `llama/models`, deploy's `.env` and keys, `agent/`'s databases), and the
 tracked `config.json` and `agent/` go back as committed. It also removes
@@ -367,7 +375,7 @@ upstream's llama.cpp and `python:3.12-slim` images. So everything
 downloads and builds again.
 
 Source files, committed or not, are never touched. Neither are system
-packages, your Hugging Face cache and token, LM Studio's models, the
+packages (the installer runs with `--no-system`), your Hugging Face cache and token, LM Studio's models, the
 kokoro-reader clone, or other containers and images. The installer runs
 with `--no-system`, so it never needs sudo. `check.sh` changes nothing
 but a cache: three test facts' vectors.

@@ -9,7 +9,13 @@
 #                                         defaults (--yes), start the containers,
 #                                         check everything (tests/zero/check.sh)
 #   tests/zero/reset.sh --install --interactive   the same, answering the installer yourself
-#   tests/zero/reset.sh --yes ...         don't ask first
+#   tests/zero/reset.sh --yes ...         don't ask about the checkout
+#   tests/zero/reset.sh --outside ...     yes to every outside-the-checkout group too
+#
+# Inside the checkout it asks once. Everything outside it is asked about
+# group by group (default no), unless --outside says yes to all of them -
+# and --install asks before the installer writes outside it too.
+# System packages are never touched; the installer runs with --no-system.
 #
 # What goes:
 #   in the checkout - every gitignored file (.venv, install.json, config,
@@ -31,10 +37,11 @@ set -euo pipefail
 cd "$(dirname "$(realpath "$0")")/../.."
 ROOT=$(pwd)
 
-YES=0 INSTALL=0 INTERACTIVE=0
+YES=0 INSTALL=0 INTERACTIVE=0 OUTSIDE=0
 for a in "$@"; do
     case "$a" in
     --yes) YES=1 ;;
+    --outside) OUTSIDE=1 ;;
     --install) INSTALL=1 ;;
     --interactive) INTERACTIVE=1 ;;
     -h|--help) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
@@ -56,14 +63,14 @@ kokoro=$(state kokoro_dir)
 
 mapfile -t ignored < <(git clean -Xdn | sed 's/^Would remove //')
 mapfile -t data < <(git status --porcelain -- config.json agent | awk '{print $2}')
-outside=()
-[ -d "${XDG_CACHE_HOME:-$HOME/.cache}/ai-voice" ] && outside+=("${XDG_CACHE_HOME:-$HOME/.cache}/ai-voice")
-[ "$(readlink -f "$HOME/.local/bin/luna" 2>/dev/null)" = "$ROOT/start.sh" ] && outside+=("$HOME/.local/bin/luna")
+data_dirs=() launchers=() venvs=()
+[ -d "${XDG_CACHE_HOME:-$HOME/.cache}/ai-voice" ] && data_dirs+=("${XDG_CACHE_HOME:-$HOME/.cache}/ai-voice")
+[ -d "$HOME/.cache/luna-zero" ] && data_dirs+=("$HOME/.cache/luna-zero")
+[ "$(readlink -f "$HOME/.local/bin/luna" 2>/dev/null)" = "$ROOT/start.sh" ] && launchers+=("$HOME/.local/bin/luna")
 desktop="$HOME/.local/share/applications/luna.desktop"
-[ -f "$desktop" ] && grep -q "$ROOT" "$desktop" && outside+=("$desktop")
-case "$venv" in "$ROOT"/*|"") ;; *) [ -d "$venv" ] && outside+=("$venv") ;; esac
-[ -n "$kokoro" ] && [ -d "$kokoro/server/.venv" ] && outside+=("$kokoro/server/.venv")
-[ -d "$HOME/.cache/luna-zero" ] && outside+=("$HOME/.cache/luna-zero")
+[ -f "$desktop" ] && grep -q "$ROOT" "$desktop" && launchers+=("$desktop")
+case "$venv" in "$ROOT"/*|"") ;; *) [ -d "$venv" ] && venvs+=("$venv") ;; esac
+[ -n "$kokoro" ] && [ -d "$kokoro/server/.venv" ] && venvs+=("$kokoro/server/.venv")
 
 containers=() volumes=() secrets=() networks=() images=()
 if [ "$have_podman" = 1 ]; then
@@ -82,40 +89,64 @@ if [ "$have_podman" = 1 ]; then
     } | sort -u)
 fi
 
-echo "Reset $ROOT to zero:"
-echo "  in the checkout:  ${#ignored[@]} ignored files and folders (llama/models, .venv, configs, agent/ data...)"
-[ "${#data[@]}" -gt 0 ] && echo "                    back as committed: ${data[*]}"
-[ "${#outside[@]}" -gt 0 ] && printf '  outside it:       %s\n' "${outside[@]}"
-if [ "$have_podman" = 1 ]; then
-    echo "  containers:       ${containers[*]:-none}"
-    echo "  volumes:          ${volumes[*]:-none}"
-    echo "  secrets:          ${secrets[*]:-none}"
-    [ "${#networks[@]}" -gt 0 ] && echo "  networks:         ${networks[*]}"
-    echo "  images:           ${#images[@]} (ours, llama.cpp's, python:3.12-slim)"
-fi
-echo "Nothing is backed up."
+# ask GROUP-DESCRIPTION: yes when --outside, else a y/N question (default no)
+ask() {
+    [ "$OUTSIDE" = 1 ] && return 0
+    local yn
+    read -r -p "  $1 [y/N] " yn || yn=n
+    case "$yn" in [Yy]*) return 0 ;; *) return 1 ;; esac
+}
+
+echo "Reset $ROOT to zero (nothing is backed up)."
+echo "In the checkout: ${#ignored[@]} gitignored files and folders (.venv, install state, keys,"
+echo "  local env files, llama/models, agent/'s databases, __pycache__)"
+[ "${#data[@]}" -gt 0 ] && echo "  and back as committed: ${data[*]}"
 if [ "$YES" != 1 ]; then
     read -r -p "Type reset to go on: " answer || answer=
     [ "$answer" = reset ] || { echo "Nothing changed."; exit 1; }
 fi
 
-# --- going ------------------------------------------------------------------------
-if [ "$have_podman" = 1 ]; then
-    [ "${#containers[@]}" -gt 0 ] && podman rm -f -t 5 "${containers[@]}" >/dev/null
-    [ "${#volumes[@]}" -gt 0 ] && podman volume rm -f "${volumes[@]}" >/dev/null
-    for s in "${secrets[@]}"; do podman secret rm "$s" >/dev/null; done
-    for n in "${networks[@]}"; do podman network rm -f "$n" >/dev/null 2>&1 || true; done
-    [ "${#images[@]}" -gt 0 ] && podman rmi -f "${images[@]}" >/dev/null 2>&1 || true
-    rm -rf "${LUNA_RUN_DIR:-${XDG_RUNTIME_DIR:-/tmp}/luna-services-$(id -u)}"
-    # The old isolated test's storage belongs to the containers' user IDs.
-    [ -d "$HOME/.cache/luna-zero" ] && podman unshare rm -rf "$HOME/.cache/luna-zero"
+echo "Outside the checkout - each only if you say so:"
+gone_outside=()
+if [ "${#data_dirs[@]}" -gt 0 ] && ask "her logs and knowledge index, and old test data: ${data_dirs[*]}?"; then
+    for p in "${data_dirs[@]}"; do
+        # the old isolated test's storage belongs to the containers' user IDs
+        if [ "$p" = "$HOME/.cache/luna-zero" ] && [ "$have_podman" = 1 ]; then podman unshare rm -rf "$p"; else rm -rf "$p"; fi
+    done
+    gone_outside+=("${data_dirs[@]}")
 fi
-for p in "${outside[@]}"; do rm -rf "$p"; done
+if [ "${#launchers[@]}" -gt 0 ] && ask "the launchers: ${launchers[*]}?"; then
+    rm -f "${launchers[@]}"; gone_outside+=("${launchers[@]}")
+fi
+if [ "${#venvs[@]}" -gt 0 ] && ask "Python environments the installer made: ${venvs[*]}?"; then
+    rm -rf "${venvs[@]}"; gone_outside+=("${venvs[@]}")
+fi
+if [ "$have_podman" = 1 ]; then
+    if [ "${#containers[@]}${#volumes[@]}${#secrets[@]}${#networks[@]}" != 0000 ] &&
+       ask "Podman: containers (${containers[*]:-none}), volumes with the models (${volumes[*]:-none}), secrets (${secrets[*]:-none})${networks:+, networks (${networks[*]})}?"; then
+        [ "${#containers[@]}" -gt 0 ] && podman rm -f -t 5 "${containers[@]}" >/dev/null
+        [ "${#volumes[@]}" -gt 0 ] && podman volume rm -f "${volumes[@]}" >/dev/null
+        for x in "${secrets[@]}"; do podman secret rm "$x" >/dev/null; done
+        for x in "${networks[@]}"; do podman network rm -f "$x" >/dev/null 2>&1 || true; done
+        rm -rf "${LUNA_RUN_DIR:-${XDG_RUNTIME_DIR:-/tmp}/luna-services-$(id -u)}"
+        gone_outside+=("Podman containers, volumes, secrets")
+    fi
+    if [ "${#images[@]}" -gt 0 ] && ask "Podman images: ${#images[@]} (ours, upstream's llama.cpp ones, python:3.12-slim)?"; then
+        podman rmi -f "${images[@]}" >/dev/null 2>&1 || true
+        gone_outside+=("${#images[@]} images")
+    fi
+fi
+
 [ "${#data[@]}" -gt 0 ] && git checkout -q HEAD -- config.json agent
 git clean -Xdfq
-echo "At zero."
+echo "The checkout is at zero.${gone_outside:+ Outside it, gone: ${gone_outside[*]}.}"
 
 [ "$INSTALL" = 1 ] || { echo "Now: ./installer/install.sh   then: tests/zero/check.sh"; exit 0; }
+
+echo
+echo "The installer writes outside the checkout too, as for a new user: the luna launcher"
+echo "(~/.local/bin, ~/.local/share/applications), pip's cache, Podman images, volumes and secrets."
+ask "Run it?" || { echo "Not installing. When you want: ./installer/install.sh"; exit 0; }
 
 # --- a new user's install, from here ------------------------------------------------
 report="${XDG_CACHE_HOME:-$HOME/.cache}/luna-reset/last.txt"

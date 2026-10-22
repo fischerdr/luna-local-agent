@@ -654,12 +654,25 @@ def detect_vram():
     return 0, "no graphics memory found"
 
 
-def pick_model(vram):
-    """The biggest model that fits vram GB (the smallest when nothing does)."""
+def pick_model(vram, reserve=0):
+    """The biggest model that fits vram GB (the smallest when nothing does),
+    with reserve GB kept for what shares the GPU with it."""
     for m in MODELS:
-        if vram >= m[6]:
+        if vram >= m[6] + reserve:
             return m
     return MODELS[-1]
+
+
+def gpu_reserve(state):
+    """GB the containers put on the GPU beside her model: the reranker
+    (about 1 GB), and the voice when it runs on an NVIDIA card with a CDI
+    spec (about 1 GB). 0 for every other backend: main's pick, as it was."""
+    if state.get("backend") != "container":
+        return 0
+    voice_gpu = (state.get("voice", {}).get("container") and shutil.which("nvidia-smi")
+                 and any(os.path.exists(p) for p in ("/etc/cdi/nvidia.yaml",
+                                                     os.path.expanduser("~/.config/cdi/nvidia.yaml"))))
+    return 1.0 + (1.0 if voice_gpu else 0)
 
 
 def _model_by_key(key):
@@ -696,21 +709,23 @@ def model(state):
             ok(f"{done[1]} (set up last time; --model <size> picks another)")
             return
 
-    m = _model_by_key(choice) if choice != "auto" else pick_model(vram)
+    reserve = gpu_reserve(state)
+    m = _model_by_key(choice) if choice != "auto" else pick_model(vram, reserve)
     if m is None:
         warn(f"no model called {choice} - picking for this machine")
-        m = pick_model(vram)
+        m = pick_model(vram, reserve)
 
     key, label, repo, file, size, mmproj, _least, ctx, lms_name = m
     if vram:
-        ok(f"{vram} GB to work with ({where})")
+        ok(f"{vram} GB to work with ({where})" + (f", {reserve:g} GB of it kept for the reranker"
+                                                   f"{' and her voice' if reserve > 1 else ''}" if reserve else ""))
     else:
         warn(f"{where} - picking a small model that also runs on the CPU (slower)")
     print(f"  {label}: {size} GB{', with vision' if mmproj else ''}, {ctx // 1024}k context")
 
     if not ARGS.yes and choice == "auto":
         options = [(m[0], f"{m[1]} ({m[4]} GB{', sees' if m[5] else ''})"
-                    + (" - too big for this machine" if vram and m[6] > vram else "")) for m in MODELS]
+                    + (" - too big for this machine" if vram and m[6] + reserve > vram else "")) for m in MODELS]
         key = choose("Which model?", options, key)
         key, label, repo, file, size, mmproj, _least, ctx, lms_name = _model_by_key(key)
 
