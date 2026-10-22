@@ -9,8 +9,9 @@ Nothing outside this folder (and kokoro-reader's, next to it) is touched
 without asking first - system packages show the exact command and wait.
 
     --yes                take every default, ask nothing
-    --backend X          lmstudio (default), llama, or skip
-    --voice X            install (default), url:http://host:port, or skip
+    --backend X          lmstudio (default), llama, container (Podman, Linux), remote, or skip
+    --remote ADDR        her servers on another machine (deploy/ there); implies --backend remote
+    --voice X            install (default), container, url:http://host:port, or skip
     --gpu X              auto (default), cpu, cuda, rocm - for the voice server
     --extras a,b         wakeword, mcp, portrait, live2d, embeddings, reranker, chat, camera, voices  (or "all")
     --model X            auto (default: picked for your GPU's memory), skip, or a size: 4b, 9b-q4, 9b, 27b...
@@ -414,11 +415,22 @@ def python_env(state, extras):
 # ---------------------------------------------------------------------------
 def voice(state, gpu_choice):
     step("Her voice (kokoro-reader)")
-    mode = ARGS.voice
+    mode = ARGS.voice or "install"
+    podman = SYSTEM == "Linux" and shutil.which("podman")
     if mode == "install" and http_ok("http://127.0.0.1:8899/health") and not state.get("kokoro_dir"):
         ok("a voice server is already answering on :8899 - using that one")
         state["voice"] = {"mode": "external", "url": "http://127.0.0.1:8899"}
         note("voice", True, "existing server on :8899")
+        return
+    if ARGS.voice is None and podman and not kokoro_python_ok():
+        # Kokoro won't install in this Python; a container brings its own.
+        lo, hi = KOKORO_PYTHON
+        print(f"  Kokoro needs Python {lo[0]}.{lo[1]}-{hi[0]}.{hi[1] - 1}; this is {sys.version.split()[0]}.")
+        where = [("container", "in a Podman container (its own Python)"),
+                 ("install", "here, in this Python (likely to fail)")]
+        mode = choose("Where should her voice run?", where, "container")
+    if mode == "container":
+        voice_container(state)
         return
     if mode == "skip":
         warn("skipped - she'll be text-only until a TTS server answers on tts.url")
@@ -483,6 +495,13 @@ def voice(state, gpu_choice):
             if not good:
                 warn("couldn't reach PyTorch's own index - the regular build will come from PyPI")
     good = pip(kpy, "-r", os.path.join(server, "requirements.txt"))
+    if not good and ARGS.voice is None and podman:
+        warn("the voice server's packages didn't install here")
+        if ask("Run her voice in a Podman container instead (it brings its own Python)?"):
+            voice_container(state)
+            return
+    elif not good and not podman and SYSTEM == "Linux":
+        print("  (with Podman installed, --voice container runs the voice in a container instead)")
     (ok if good else fail)(f"voice server ready ({device})" if good else "voice server packages failed")
     state["kokoro_dir"] = kdir
     state["voice"] = {"mode": "managed", "python": kpy, "server": os.path.join(server, "kokoro_server.py"),
@@ -500,9 +519,13 @@ def backend(state):
     if choice is None:
         options = [("lmstudio", "LM Studio - an app with a model browser; easiest"),
                    ("llama", "llama.cpp's own server - builds it here, unlocks the research features"),
+                   ("container", "llama.cpp in Podman containers - nothing to build"),
+                   ("remote", "on another machine - a GPU server on your network"),
                    ("skip", "skip - I'll set one up myself")]
         if SYSTEM == "Windows":
             options = [o for o in options if o[0] != "llama"]
+        if SYSTEM != "Linux" or not shutil.which("podman"):
+            options = [o for o in options if o[0] != "container"]
         choice = choose("Which model server?", options, "lmstudio")
     state["backend"] = choice
 
@@ -532,6 +555,10 @@ def backend(state):
         good = run(["bash", os.path.join(ROOT, "llama", "install.sh"), kind])
         note("model server", good, "llama.cpp built - put a model in llama/models and run llama/start.sh"
              if good else "llama.cpp build failed - see above")
+    elif choice == "container":
+        ok("set up after her model is picked")
+    elif choice == "remote":
+        remote(state)
     else:
         note("model server", False, "skipped")
 
@@ -649,6 +676,9 @@ def model(state):
     if choice == "skip" or state.get("backend") == "skip":
         note("model", False, "skipped")
         return
+    if state.get("backend") == "remote":
+        ok("on the server - deploy/.env there says which")
+        return
 
     vram, where = detect_vram()
 
@@ -677,6 +707,10 @@ def model(state):
                     + (" - too big for this machine" if vram and m[6] > vram else "")) for m in MODELS]
         key = choose("Which model?", options, key)
         key, label, repo, file, size, mmproj, _least, ctx, lms_name = _model_by_key(key)
+
+    if state.get("backend") == "container":
+        container_model(state, key, label, repo, file, mmproj, ctx)
+        return
 
     if state.get("backend") == "llama":
         dest_dir = os.path.join(ROOT, "llama", "models")
@@ -710,6 +744,39 @@ def model(state):
     else:
         print(f"  In LM Studio: search \"{lms_name.split('@')[0]}\" and pick {lms_name.split('@')[1].upper()}.")
         note("model", False, f"get {label} in LM Studio")
+
+
+def set_env_line(path, key, value):
+    """Set KEY="value" in a .local.env file, adding or replacing its line."""
+    import re
+
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        text = "# Written by the installer for this machine (not committed). Edit freely.\n"
+    line = f'{key}="{value}"'
+    pattern = re.compile(rf"^{re.escape(key)}=.*$", re.M)
+    text = pattern.sub(line, text, count=1) if pattern.search(text) else text.rstrip("\n") + "\n" + line + "\n"
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+
+
+def container_model(state, key, label, repo, file, mmproj, ctx):
+    """The picked model for the containers: downloaded by -hf into their
+    volume on the first start, so nothing lands in llama/models."""
+    import re
+
+    m = re.search(r"-((?:I?Q\d\w*)|F16|BF16)\.gguf$", file, re.I)
+    hf = f"{repo}:{m.group(1)}" if m else repo
+    set_env_line(os.path.join(ROOT, "services", "services.local.env"), "MODEL_HF", hf)
+    local = os.path.join(ROOT, "llama", "server.local.env")
+    set_env_line(local, "CTX", str(ctx))
+    # the small picks leave vision out, so the model and its context fit
+    set_env_line(local, "MMPROJ", "" if mmproj else "off")
+    state["model"] = key
+    ok(f"MODEL_HF={hf} - in services/services.local.env; it downloads on the first start")
+    note("model", True, f"{label}, for the containers")
 
 
 # ---------------------------------------------------------------------------
@@ -804,6 +871,272 @@ def launchers(state):
 
 
 # ---------------------------------------------------------------------------
+# Containers, and a GPU server on the network (both optional)
+#
+# --backend container / --voice container run the model servers and the
+# voice in rootless Podman containers on this machine: python -m services
+# does the work, in Luna's own Python, so nothing of it loads unless asked.
+# --remote ADDR points her at a server running deploy/ instead.
+# ---------------------------------------------------------------------------
+VOICES = ("install", "container", "skip")
+BACKENDS = ("lmstudio", "llama", "container", "remote", "skip")
+# kokoro and misaki 0.9.4 both say requires-python >=3.10,<3.13
+KOKORO_PYTHON = ((3, 10), (3, 13))
+SIDE_EXTRAS = ("embeddings", "reranker")
+REMOTE_PORTS = (("chat", 8080, "/v1/models"), ("embeddings", 8081, "/v1/models"),
+                ("reranker", 8082, "/v1/models"), ("voice", 8899, "/health"))
+
+
+def url_host(addr):
+    """An address as it goes in a URL: IPv6 in brackets."""
+    return f"[{addr}]" if ":" in addr and not addr.startswith("[") else addr
+
+
+def check_address(addr):
+    """None if addr can be a server on the network, else why not."""
+    import ipaddress
+    import re
+
+    bare = addr.strip("[]")
+    try:
+        ip = ipaddress.ip_address(bare)
+    except ValueError:
+        if not re.fullmatch(r"(?=.{1,253}$)([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*", bare):
+            return f"{addr} isn't an IP address or a host name"
+        if bare.lower() == "localhost":
+            return "that's this machine - for servers here, use --backend container (or llama)"
+        return None
+    if ip.is_loopback or ip.is_unspecified:
+        return "that's this machine - for servers here, use --backend container (or llama)"
+    return None
+
+
+def validate_args(args, system=SYSTEM, which=shutil.which, exists=os.path.exists):
+    """The flags against each other, before anything runs: (args, errors,
+    notes). Errors stop the installer; notes are said once. Main's flags
+    keep their meaning - this only adds the new ones, and refuses a
+    --voice it doesn't know instead of quietly installing."""
+    errors, notes = [], []
+
+    if args.check:
+        given = [f"--{name.replace('_', '-')}" for name, default in
+                 (("backend", None), ("remote", None), ("voice", None), ("gpu", "auto"), ("extras", None),
+                  ("model", "auto"), ("no_system", False), ("yes", False)) if getattr(args, name) != default]
+        if given:
+            notes.append(f"--check only runs the health check - ignoring {', '.join(given)}")
+        return args, errors, notes
+
+    if args.remote:
+        if args.backend not in (None, "remote"):
+            errors.append(f"--remote goes with --backend remote, not --backend {args.backend}")
+        else:
+            args.backend = "remote"
+            why = check_address(args.remote)
+            if why:
+                errors.append(f"--remote {args.remote}: {why}")
+    elif args.backend == "remote" and args.yes:
+        errors.append("--backend remote needs the server's address: --remote <address>")
+
+    containers = args.backend == "container" or args.voice == "container"
+    if containers and system != "Linux":
+        errors.append("containers here are Linux only - on this machine use LM Studio, "
+                      "or put them on a Linux GPU server and use --remote <its address>")
+
+    v = args.voice
+    if v is not None and v not in VOICES and not (v.startswith(("url:http://", "url:https://")) and len(v) > 11):
+        errors.append(f"--voice {v}: use install, container, url:http://host:port, or skip")
+
+    if args.gpu == "mps" and containers:
+        errors.append("--gpu mps is Apple's GPU - containers can't use it")
+    elif containers and args.gpu == "cuda" and not which("nvidia-smi"):
+        notes.append("--gpu cuda, but there's no NVIDIA GPU here - the containers use the cpu image")
+    elif containers and args.gpu == "rocm" and not exists("/dev/kfd"):
+        notes.append("--gpu rocm, but there's no /dev/kfd here - the containers use the cpu image")
+
+    if args.extras is not None:
+        names = list(EXTRAS) if args.extras == "all" else [e.strip() for e in args.extras.split(",") if e.strip()]
+        unknown = [e for e in names if e not in EXTRAS]
+        if unknown:
+            notes.append(f"no such extra: {', '.join(unknown)} (they are: {', '.join(EXTRAS)})")
+        names = [e for e in names if e in EXTRAS]
+        if args.backend in ("container", "remote"):
+            dropped = [e for e in names if e in SIDE_EXTRAS]
+            if dropped:
+                where = "the containers download them by themselves" if args.backend == "container" \
+                    else "the server holds its own models"
+                notes.append(f"leaving out {', '.join(dropped)} - {where}")
+            names = [e for e in names if e not in SIDE_EXTRAS]
+        args.extras = ",".join(names)
+
+    if args.backend == "remote" and args.remote and args.voice is None and not errors:
+        args.voice = f"url:http://{url_host(args.remote)}:8899"
+    return args, errors, notes
+
+
+def services(state, *args):
+    """python -m services, in Luna's Python (it needs requests). True on success."""
+    py = state.get("venv_python") or sys.executable
+    return run([py, "-m", "services", *args, *(["--yes"] if ARGS.yes else [])], cwd=ROOT)
+
+
+def container_gpu():
+    """The --gpu flag as python -m services setup takes it."""
+    if ARGS.gpu == "cuda":
+        return "auto" if shutil.which("nvidia-smi") else "cpu"
+    if ARGS.gpu == "rocm":
+        return "rocm" if os.path.exists("/dev/kfd") else "cpu"
+    return {"cpu": "cpu"}.get(ARGS.gpu, "auto")
+
+
+def containers(state):
+    """--backend container: python -m services setup, after the model step."""
+    step("Her brain, in containers")
+    if not shutil.which("podman"):
+        warn("Podman isn't installed - on Fedora: sudo dnf install podman; Ubuntu/Debian: sudo apt install podman")
+        print("  Or run the installer again with --backend lmstudio, or --backend llama to build llama.cpp here.")
+        note("model server", False, "containers: Podman isn't installed")
+        return
+    good = services(state, "setup", "--gpu", container_gpu())
+    note("model server", good, "in containers - python -m services up starts them"
+         if good else "container setup stopped - the lines above say why")
+
+
+def voice_container(state):
+    """--voice container: python -m services setup tts. True if it worked."""
+    if not shutil.which("podman"):
+        warn("Podman isn't installed - the voice container needs it "
+             "(Fedora: sudo dnf install podman; Ubuntu/Debian: sudo apt install podman)")
+        note("voice", False, "container: Podman isn't installed")
+        return False
+    good = services(state, "setup", "tts")
+    if good:
+        # setup tts wrote install.json's voice; keep it when this state is saved
+        state["voice"] = load_state().get("voice") or state.get("voice", {})
+    note("voice", good, "in a container (luna-tts) on :8899" if good else "voice container setup stopped")
+    return good
+
+
+def kokoro_python_ok(version=None):
+    """Whether this Python can run Kokoro on the host."""
+    v = tuple((version or sys.version_info)[:2])
+    return KOKORO_PYTHON[0] <= v < KOKORO_PYTHON[1]
+
+
+def client_ip(host):
+    """This machine's address as the server sees it (for the firewall rule)."""
+    import socket
+
+    try:
+        family = socket.AF_INET6 if ":" in host.strip("[]") else socket.AF_INET
+        with socket.socket(family, socket.SOCK_DGRAM) as s:
+            s.connect((host.strip("[]"), 9))
+            return s.getsockname()[0]
+    except OSError:
+        return "this machine's address"
+
+
+def remote_probe(host, key, get=None):
+    """Each service on the server: [(name, ok, line)]."""
+    import urllib.error
+
+    lines = []
+    for name, port, path in REMOTE_PORTS:
+        url = f"http://{url_host(host)}:{port}{path}"
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {key}"} if key else {})
+        try:
+            with (get or urllib.request.urlopen)(req, timeout=3) as r:
+                code = r.status
+        except urllib.error.HTTPError as e:
+            code = e.code
+        except Exception:
+            code = None
+        if code == 200:
+            lines.append((name, True, f"{name}: {url}"))
+        elif code == 401:
+            lines.append((name, False, f"{name}: the key doesn't match the server's (llama/.api_key)"))
+        elif code is None:
+            lines.append((name, False, f"{name}: no answer at {url} - check that the server is up, that its "
+                                       f"LUNA_BIND is its own address, and that its firewall lets this "
+                                       f"machine in ({client_ip(host)})"))
+        else:
+            lines.append((name, False, f"{name}: {url} answered {code}"))
+    return lines
+
+
+def write_key(key):
+    """llama/.api_key, readable only by you."""
+    path = os.path.join(ROOT, "llama", ".api_key")
+    old = os.umask(0o077)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(key.strip())
+    finally:
+        os.umask(old)
+    os.chmod(path, 0o600)
+    return path
+
+
+def remote(state):
+    """--backend remote: her URLs on the server, its key here, then a probe."""
+    step("Her brain, on another machine")
+    host = ARGS.remote
+    while not host:
+        try:
+            host = input("  The server's address on your network: ").strip()
+        except EOFError:
+            host = ""
+        if not host:
+            warn("no address - run again with --remote <address>")
+            note("model server", False, "remote: no address")
+            return
+        why = check_address(host)
+        if why:
+            warn(why)
+            host = None
+    base = f"http://{url_host(host)}"
+    set_config("llm", "backend", "llama")
+    set_config("llm", "llama_url", f"{base}:8080/v1/chat/completions")
+    set_config("llm", "embed_url", f"{base}:8081/v1/embeddings")
+    set_config("llm", "rerank_url", f"{base}:8082/v1/rerank")
+    # start_llama() doesn't ask where the URL points: with a llama.cpp
+    # build here it would start a useless local server whenever the
+    # remote one is down.
+    set_config("llm", "autostart", False)
+    state["remote"] = host
+    ok(f"config.json: her model, embeddings and reranker at {base}")
+
+    path = os.path.join(ROOT, "llama", ".api_key")
+    have = ""
+    try:
+        with open(path, encoding="utf-8") as f:
+            have = f.read().strip()
+    except OSError:
+        pass
+    if ARGS.yes:
+        if not have:
+            warn("no key yet - copy the server's deploy/api_key to llama/.api_key")
+    else:
+        try:
+            given = input("  The server's api_key (paste it, or a path to the file; Enter keeps "
+                          f"{'the one here' if have else 'none'}): ").strip()
+        except EOFError:
+            given = ""
+        if given and os.path.isfile(os.path.expanduser(given)):
+            with open(os.path.expanduser(given), encoding="utf-8") as f:
+                given = f.read().strip()
+        if given and given != have and (not have or ask("Replace the key in llama/.api_key?", default=False)):
+            write_key(given)
+            have = given
+            ok("llama/.api_key written (readable only by you)")
+
+    results = remote_probe(host, have)
+    for _name, good, line in results:
+        (ok if good else fail)(line)
+    up = all(good for _n, good, _l in results[:1])
+    note("model server", up, f"on {host}" if up else f"on {host} - not answering yet (see above)")
+
+
+# ---------------------------------------------------------------------------
 # config.json - only the keys the installer owns, everything else untouched
 # ---------------------------------------------------------------------------
 def set_config(section, key, value):
@@ -856,11 +1189,29 @@ def health(state):
     ll = http_ok("http://127.0.0.1:8080/health")
     (ok if lm or ll else warn)("model server: " + ("llama.cpp :8080" if ll else "LM Studio :1234" if lm
                                                    else "none running yet (start LM Studio's server or llama/start.sh)"))
+    if state.get("backend") == "container":
+        py = state.get("venv_python") or sys.executable
+        out = subprocess.run([py, "-m", "services", "status"], cwd=ROOT, capture_output=True, text=True)
+        for line in (out.stdout or out.stderr).strip().splitlines():
+            print("  " + line.strip().replace("✓", f"{G}✓{X}").replace("·", f"{Y}·{X}"))
+    elif state.get("backend") == "remote" and state.get("remote"):
+        try:
+            with open(os.path.join(ROOT, "llama", ".api_key"), encoding="utf-8") as f:
+                key = f.read().strip()
+        except OSError:
+            key = ""
+        for _name, good, line in remote_probe(state["remote"], key)[:3]:
+            (ok if good else warn)(line)
     v = state.get("voice", {})
     if v.get("mode") == "managed":
         ok("voice: the launcher starts kokoro-reader with her")
     elif v.get("mode") == "external":
-        (ok if http_ok(v["url"] + "/health") else warn)(f"voice: {v['url']}")
+        where = " (container luna-tts)" if v.get("container") else ""
+        (ok if http_ok(v["url"] + "/health") else warn)(f"voice: {v['url']}{where}")
+    elif v.get("mode") == "none":
+        ok("voice: none - she's text-only")
+    elif v.get("mode"):
+        warn(f"voice: install.json says \"{v['mode']}\", which this installer doesn't know - run it again")
 
 
 def summary():
@@ -874,21 +1225,32 @@ def summary():
 
 
 # ---------------------------------------------------------------------------
-def main():
-    global ARGS
+def parser():
     ap = argparse.ArgumentParser(description="Install Luna.", formatter_class=argparse.RawDescriptionHelpFormatter,
                                  epilog=__doc__.split("\n\n", 2)[-1])
     ap.add_argument("--yes", "-y", action="store_true")
-    ap.add_argument("--backend", choices=["lmstudio", "llama", "skip"])
-    ap.add_argument("--voice", default="install")
+    ap.add_argument("--backend", choices=list(BACKENDS))
+    ap.add_argument("--remote", default=None, metavar="ADDR")
+    # no choices=: url:... has to get through; validate_args checks it
+    ap.add_argument("--voice", default=None)
     ap.add_argument("--gpu", default="auto", choices=["auto", "cpu", "cuda", "rocm", "mps"])
     ap.add_argument("--extras", default=None)
     ap.add_argument("--model", default="auto")
     ap.add_argument("--no-system", action="store_true")
     ap.add_argument("--check", action="store_true")
-    ARGS = ap.parse_args()
+    return ap
+
+
+def main():
+    global ARGS
+    ap = parser()
+    ARGS, errors, notes = validate_args(ap.parse_args())
+    for line in errors:
+        ap.error(line)
 
     print(f"{P}Luna - local AI companion - installer{X}  {D}{ROOT}{X}")
+    for line in notes:
+        warn(line)
     state = load_state()
     if ARGS.check:
         health(state)
@@ -911,6 +1273,8 @@ def main():
                     extras.append(key)
     else:
         extras = [e for e in (EXTRAS if ARGS.extras == "all" else ARGS.extras.split(",")) if e in EXTRAS]
+        if ARGS.backend in ("container", "remote"):
+            extras = [e for e in extras if e not in SIDE_EXTRAS]
     state["extras"] = extras
 
     system_packages()
@@ -923,6 +1287,9 @@ def main():
     backend(state)
     model(state)
     save_state(state)
+    if state.get("backend") == "container":
+        containers(state)
+        save_state(state)
     extras_files(extras)
     if py:
         launchers(state)
