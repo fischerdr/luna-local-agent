@@ -222,6 +222,10 @@ def setup(a, gpu="auto"):
         except settings.SettingsError as e:
             warn(str(e))
 
+    if backend != "cpu" and a.ask("Measure where the reranker should run on this GPU (about a minute)?"):
+        from services.bench import bench
+
+        bench(a)
     autostart(a)
     print("  Next: python -m services up" + ("" if config_services().get("autostart") else ", or ./start.sh"))
     return True

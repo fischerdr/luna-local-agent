@@ -6,6 +6,7 @@
     python -m services down [ROLE...] stop and remove them; models stay
     python -m services status         each one, and whether it answers
     python -m services logs ROLE      a container's log (-f follows it)
+    python -m services bench          where the side models go on a small GPU
 
 Roles: chat, embed, rerank, tts. Settings: llama/server.env (as for
 llama/start.sh), then services/services.env.
@@ -92,6 +93,14 @@ def cmd_logs(args):
     os.execvp("podman", ["podman", "logs", *(["-f"] if args.follow else []), CONTAINER[args.role]])
 
 
+def cmd_bench(args):
+    """Where the side models should go on this GPU (services/bench.py)."""
+    from services.bench import bench
+    from services.setup import Asker
+
+    return 0 if bench(Asker(args.yes)) else 1
+
+
 def cmd_setup(args):
     """The setup steps (services/setup.py)."""
     from services.setup import Asker, setup, setup_tts
@@ -120,6 +129,9 @@ def main(argv=None):
     p.set_defaults(func=cmd_down)
     p = sub.add_parser("status", help="what's running, and answering")
     p.set_defaults(func=cmd_status)
+    p = sub.add_parser("bench", help="where the embedder and reranker should run on this GPU")
+    p.add_argument("--yes", action="store_true", help="write the recommendation without asking")
+    p.set_defaults(func=cmd_bench)
     p = sub.add_parser("logs", help="a container's log")
     p.add_argument("role", choices=tuple(CONTAINER))
     p.add_argument("-f", "--follow", action="store_true")
