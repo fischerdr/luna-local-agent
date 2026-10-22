@@ -1,0 +1,3 @@
+# The image needs the entrypoint and nothing else from this folder.
+*
+!entrypoint.sh

@@ -1,6 +1,7 @@
-"""The scope fence for feat/containers (plans/container-migration-plan-v2.md,
-section 2.2): what the branch may add or change, compared with the commit it
-branched from.
+"""The scope fence for feat/containers.
+
+What the branch may add or change (plans/container-migration-plan-v2.md,
+section 2.2), compared with the commit it branched from.
 
     python tests/check_scope_fence.py              (committed work only)
     python tests/check_scope_fence.py --worktree   (plus uncommitted changes)
@@ -34,15 +35,18 @@ RUNTIME = ("llama/.api_key", "llama/server.local.env")
 
 
 def git(*args):
+    """Run git in the repo and return its output."""
     return subprocess.run(["git", *args], cwd=ROOT, check=True,
                           capture_output=True, text=True).stdout
 
 
 def lines(*args):
+    """Git output as a list of non-empty lines."""
     return [ln for ln in git(*args).splitlines() if ln]
 
 
 def added_ok(path):
+    """Whether a new file is somewhere the branch may add one."""
     return path in ADDED_FILES or path.startswith(ADDED_DIRS)
 
 
@@ -85,6 +89,7 @@ def check(worktree=False):
 
 
 def main():
+    """Print the verdict; exit 1 when the fence is broken."""
     bad = check(worktree="--worktree" in sys.argv[1:])
     for b in bad:
         print("✗", b)
