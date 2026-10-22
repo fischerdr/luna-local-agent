@@ -96,21 +96,17 @@ VOICE_MIB = 1000        # Kokoro on CUDA: torch's context, the model and its wor
 
 def model_mib(m, s):
     """A role's model size in MiB, as near as we can tell (0 unknown): the
-    file, or - not downloaded yet - what Hugging Face says it is."""
+    file under LUNA_MODELS_DIR, or what Hugging Face says an -hf one is."""
     if m.host_mount:
         root = os.path.realpath(os.path.expanduser(s["LUNA_MODELS_DIR"]))
         path = os.path.join(root, m.file[len(settings.HOST_MODELS) + 1:])
         return os.path.getsize(path) // MIB if os.path.exists(path) else 0
-    found = lifecycle.podman("run", "--rm", "--entrypoint", "sh", "-v", f"{VOLUME['models']}:/models:ro",
-                             images.find("cpu") or "", "-c",
-                             f"du -Lbc $(find /models -iname '*{m.hf.split('/')[-1].split(':')[0]}*' "
-                             "-name '*.gguf' ! -iname '*mmproj*' 2>/dev/null) 2>/dev/null | tail -1")
-    nums = re.findall(r"^\d+", found.stdout.strip())
-    if nums and int(nums[0]):
-        return int(nums[0]) // MIB
-    from services.setup import hf_size
+    if m.hf:
+        # What Hugging Face says it is: the same whether it's downloaded or not.
+        from services.setup import hf_size
 
-    return (hf_size(m.hf) or 0) // MIB
+        return (hf_size(m.hf) or 0) // MIB
+    return 0                      # a file already imported into the volume: unknown
 
 
 def spare_port():

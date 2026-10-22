@@ -92,10 +92,9 @@ needed. `LUNA_CONTAINER_TESTS=1` (or `full`) with
 `python -m unittest discover -v tests/containers` runs the container
 tests, on their own `luna-test-*` containers.
 
-From zero, as a new user: `tests/zero/isolated.sh` installs it all again
-beside your own setup, and checks it. On your own install,
-`tests/zero/wipe.sh`, then `./installer/install.sh` and
-`tests/zero/check.sh`, then `tests/zero/restore.sh <backup>`
+From zero, for working on it: `tests/zero/reset.sh --install` puts this
+checkout and machine back as after `git clone` (models, data, images and
+all; no backup), installs as a new user would, and checks it
 ([details](docs/containers.md#from-zero)).
 
 ## Troubleshooting

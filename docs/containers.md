@@ -345,39 +345,32 @@ They download a few small public models once, into `luna-test-models`.
 
 ### From zero
 
-To see what a new user sees, install it all again from nothing:
+For working on the backend: put this checkout and this machine back as
+they were just after `git clone`, then install as a new user would. It
+catches what a long-lived setup hides.
 
 ```bash
-tests/zero/isolated.sh            # beside your own setup, which isn't touched
-tests/zero/isolated.sh --clean    # remove it afterwards
+tests/zero/reset.sh                          # show what goes, ask, reset
+tests/zero/reset.sh --install                # reset, install (--yes), up, check
+tests/zero/reset.sh --install --interactive  # the same, answering the installer yourself
+tests/zero/check.sh                          # after any install: does everything answer?
 ```
 
-It makes a fresh clone of this branch (what's committed), with a HOME of
-its own and a Podman storage of its own: its own images, volumes and
-secrets, so everything downloads again. Then it runs the installer as a
-new user would, starts the containers and checks them. It uses the real
-ports, so your own `luna-*` containers are stopped while it runs and
-started again after. It needs about 30 GB (`ZERO_DIR` moves it).
-`ZERO_ARGS` changes the installer's flags; without `--yes` you answer
-its questions yourself. `ZERO_WIPE_TEST=1` also tests the next two.
+It removes, with **no backup**: every gitignored file in the checkout
+(`.venv`, `install.json`, `llama/.api_key`, the `.local.env` files,
+`llama/models`, deploy's `.env` and keys, `agent/`'s databases), and the
+tracked `config.json` and `agent/` go back as committed. It also removes
+`~/.cache/ai-voice` (her logs and knowledge index), the `luna` launcher
+and app entry, the host voice's venv, and in Podman every `luna-*`
+container, volume and network, every `luna_*` secret, our images, and
+upstream's llama.cpp and `python:3.12-slim` images. So everything
+downloads and builds again.
 
-On your own install:
-
-```bash
-tests/zero/wipe.sh                # back up, then remove it all
-./installer/install.sh            # a first run, as a new user
-tests/zero/check.sh               # does everything answer?
-tests/zero/restore.sh <backup>    # put yours back
-```
-
-`wipe.sh` backs up config.json, install.json, `llama/.api_key`,
-`llama/server.local.env`, `services/services.local.env` and deploy's
-files, and exports the volumes. Then it removes the containers, our
-images and upstream's base images, the secrets and the env-files.
-`ZERO_VENV=1` also moves Luna's Python environment aside, and
-`ZERO_OLD=1` removes images an older setup left. Your models folder, your
-Hugging Face token and her memory (`agent/`) are never touched.
-`check.sh` only reads, apart from caching three test facts' vectors.
+Source files, committed or not, are never touched. Neither are system
+packages, your Hugging Face cache and token, LM Studio's models, the
+kokoro-reader clone, or other containers and images. The installer runs
+with `--no-system`, so it never needs sudo. `check.sh` changes nothing
+but a cache: three test facts' vectors.
 
 ## What was checked
 

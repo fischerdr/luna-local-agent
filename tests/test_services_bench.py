@@ -79,10 +79,10 @@ class ModelSize(unittest.TestCase):
         from services import settings
 
         m = settings.Model(hf="bartowski/Qwen_Qwen3.5-9B-GGUF:Q4_K_M")
-        with mock.patch.object(bench.lifecycle, "podman", return_value=mock.Mock(stdout="0\n")), \
-             mock.patch.object(bench.images, "find", return_value="IMG"), \
+        with mock.patch.object(bench.lifecycle, "podman") as podman, \
              mock.patch("services.setup.hf_size", return_value=6_200_000_000):
             self.assertEqual(bench.model_mib(m, {}), 6_200_000_000 // bench.MIB)
+        podman.assert_not_called()        # never measured in the volume (the bug: du of nothing)
 
 
 class Vram(unittest.TestCase):
