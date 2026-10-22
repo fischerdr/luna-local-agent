@@ -2,6 +2,7 @@
 
     python -m services setup          everything it needs, asking first
     python -m services setup tts      her voice in a container
+    python -m services setup --server --allow IP   this machine as a GPU server (deploy/)
     python -m services up [ROLE...]   start (or keep) chat, embed, rerank (and tts)
     python -m services down [ROLE...] stop and remove them; models stay
     python -m services status         each one, and whether it answers
@@ -105,6 +106,10 @@ def cmd_setup(args):
     """The setup steps (services/setup.py)."""
     from services.setup import Asker, setup, setup_tts
 
+    if args.server:
+        from services.setup import setup_server
+
+        return 0 if setup_server(Asker(args.yes), args.allow) else 1
     if args.what == "tts":
         return 0 if setup_tts(Asker(args.yes)) else 1
     return 0 if setup(Asker(args.yes), gpu=args.gpu) else 1
@@ -118,6 +123,8 @@ def main(argv=None):
     p.add_argument("what", nargs="?", choices=("tts",), help="tts: her voice only")
     p.add_argument("--yes", action="store_true", help="take every default without asking")
     p.add_argument("--gpu", default="auto", help="auto (default), cpu, cuda, cuda13, rocm or vulkan")
+    p.add_argument("--server", action="store_true", help="this machine serves another on the network (deploy/)")
+    p.add_argument("--allow", metavar="IP", help="with --server: the one client to let through the firewall")
     p.set_defaults(func=cmd_setup)
     p = sub.add_parser("up", help="start or keep the containers")
     p.add_argument("roles", nargs="*")

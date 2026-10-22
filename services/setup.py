@@ -326,5 +326,87 @@ def setup_tts(a):
     return True
 
 
+DEPLOY = os.path.join(ROOT, "deploy")
+SERVER_PORTS = ("8080-8082", "8899")
+
+
+def firewall_rules(client):
+    """The commands that let one client in, for each firewall - printed,
+    never run (they need root)."""
+    import ipaddress
+
+    family = "ipv6" if ipaddress.ip_address(client).version == 6 else "ipv4"
+    nft = "ip6" if family == "ipv6" else "ip"
+    firewalld = [f"sudo firewall-cmd --permanent --add-rich-rule='rule family={family} source address={client} "
+                 f"port port={p} protocol=tcp accept'" for p in SERVER_PORTS] + ["sudo firewall-cmd --reload"]
+    ufw = [f"sudo ufw allow from {client} to any port {p.replace('-', ':')} proto tcp" for p in SERVER_PORTS]
+    nftables = [f"sudo nft add rule inet filter input {nft} saddr {client} tcp dport {{ 8080-8082, 8899 }} accept"]
+    return {"firewalld": firewalld, "ufw": ufw, "nftables": nftables}
+
+
+def compose_files(backend):
+    """The -f files for this server's GPU, for podman compose and docker compose."""
+    extra = {"cuda": "compose.cuda", "cuda13": "compose.cuda", "rocm": "compose.rocm",
+             "vulkan": "compose.vulkan"}.get(backend)
+    podman = ["-f", "compose.yaml"] + (["-f", f"{extra}.yaml"] if extra else [])
+    docker = ["-f", "compose.yaml"] + (["-f", "compose.cuda.docker.yaml" if extra == "compose.cuda"
+                                        else f"{extra}.yaml"] if extra else [])
+    return podman, docker
+
+
+def setup_server(a, allow=None):
+    """Make deploy/ ready for compose (setup --server): this machine as a GPU
+    server on your network. Prints the firewall rule; never runs sudo."""
+    import ipaddress
+
+    print("Luna's backend for the network - this machine as the server")
+    if allow:
+        try:
+            ipaddress.ip_address(allow)
+        except ValueError:
+            warn(f"--allow {allow} isn't an IP address - the client's address on your network")
+            return False
+
+    key = os.path.join(DEPLOY, "api_key")
+    if os.path.exists(key):
+        ok("deploy/api_key is there")
+    elif a.ask("Make deploy/api_key (random, readable only by you)?"):
+        keys.make_key(key)
+        ok("deploy/api_key - copy it into the client's llama/.api_key (the installer's --remote asks for it)")
+
+    token = os.path.join(DEPLOY, "hf_token")
+    if not os.path.exists(token):
+        # compose won't start with a secret file missing; empty means none
+        open(token, "w").close()
+        os.chmod(token, 0o600)
+        ok("deploy/hf_token, empty: public models only (put your token in it, or set HF_TOKEN_FILE in .env)")
+
+    env = os.path.join(DEPLOY, ".env")
+    if not os.path.exists(env) and a.ask("Make deploy/.env from .env.example?"):
+        shutil.copyfile(os.path.join(DEPLOY, ".env.example"), env)
+        ok("deploy/.env - set LUNA_BIND (this server's address) and MODEL_HF in it")
+
+    backend, note = images.image_for_host("auto")
+    if note:
+        warn(note)
+    podman, docker = compose_files(backend)
+    print(f"  Start it ({backend}), from deploy/:")
+    print("    podman compose " + " ".join(podman) + " up -d")
+    print("    docker compose " + " ".join(docker) + " up -d")
+
+    if allow:
+        print(f"  Let {allow} in, and nothing else - for your firewall, one of:")
+        for name, cmds in firewall_rules(allow).items():
+            print(f"    {name}:")
+            for cmd in cmds:
+                print(f"      {cmd}")
+    else:
+        print("  Then let the client in: python -m services setup --server --allow <its IP> prints the rule.")
+    print("  Plain HTTP on your LAN: the key guards chat, embeddings and the reranker; the voice has no key,")
+    print("  so that firewall rule is what keeps everyone else out.")
+    print("  On the client: ./installer/install.sh --remote <this server's address>")
+    return True
+
+
 if __name__ == "__main__":
     sys.exit(0 if setup(Asker("--yes" in sys.argv)) else 1)

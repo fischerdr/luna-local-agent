@@ -69,3 +69,14 @@ The host build (`llama/install.sh`) tracks llama.cpp master (`git clone
 | Token and key elsewhere | Not in `podman inspect`, the logs, or llama-server's argv. |
 | Empty token file | Not exported (the compose placeholder case). **Podman refuses an empty secret** (`secret create` exits 125), so the local path only adds `--secret luna_hf_token` when there is a token, and compose's empty placeholder needs checking in P7. |
 | Gated model with your token | Opt-in: `LUNA_TEST_GATED=<repo>` (not run here). |
+
+## Compose (P7)
+
+| Check | Result |
+|---|---|
+| `podman compose config` (podman-compose 1.5.0) | base, `compose.cuda.yaml`, `compose.rocm.yaml` and `compose.vulkan.yaml` all validate. |
+| `docker compose config` (Docker Compose v2, from the `docker:cli` image, since this machine has only Podman's docker shim) | base, `compose.cuda.docker.yaml`, rocm and vulkan all validate; the merged CUDA config gives llama, rerank and tts the GPU and leaves embed on the cpu image. |
+| No `LUNA_BIND` | Compose refuses: "set LUNA_BIND to this server's LAN IP". |
+| Empty `hf_token` file | podman-compose mounts file secrets, so an empty placeholder works (unlike `podman secret create`); the entrypoint exports no token. |
+| Live | `up -d --build` on loopback test ports: 4 healthy services, loopback only; the installer's probe finds them and names a wrong key; `down -v` leaves nothing. |
+| Image names | Compose builds `luna-deploy-*`, so it never moves the tag of a labelled `luna-services-*` image. |

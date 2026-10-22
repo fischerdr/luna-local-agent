@@ -1035,12 +1035,12 @@ def client_ip(host):
         return "this machine's address"
 
 
-def remote_probe(host, key, get=None):
+def remote_probe(host, key, get=None, ports=REMOTE_PORTS):
     """Each service on the server: [(name, ok, line)]."""
     import urllib.error
 
     lines = []
-    for name, port, path in REMOTE_PORTS:
+    for name, port, path in ports:
         url = f"http://{url_host(host)}:{port}{path}"
         req = urllib.request.Request(url, headers={"Authorization": f"Bearer {key}"} if key else {})
         try:

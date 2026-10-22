@@ -168,5 +168,79 @@ class Setup(unittest.TestCase):
         self.assertFalse(install.REPORT[-1][1])
 
 
+class Server(unittest.TestCase):
+    """The server side: python -m services setup --server --allow <client>."""
+
+    def setUp(self):
+        from services import setup
+
+        self.setup = setup
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        shutil.copy(os.path.join(ROOT, "deploy", ".env.example"), self.tmp.name)
+        p = mock.patch.object(setup, "DEPLOY", self.tmp.name)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def run_server(self, allow):
+        with mock.patch.object(self.setup.images, "image_for_host", return_value=("cuda13", None)), \
+             contextlib.redirect_stdout(io.StringIO()) as out:
+            done = self.setup.setup_server(self.setup.Asker(yes=True), allow)
+        return done, out.getvalue()
+
+    def test_firewall_rules_admit_one_client(self):
+        rules = self.setup.firewall_rules("192.168.1.20")
+        self.assertIn("sudo firewall-cmd --permanent --add-rich-rule='rule family=ipv4 source address=192.168.1.20 "
+                      "port port=8080-8082 protocol=tcp accept'", rules["firewalld"])
+        self.assertTrue(any("port=8899" in r for r in rules["firewalld"]))
+        self.assertEqual(rules["firewalld"][-1], "sudo firewall-cmd --reload")
+        self.assertIn("sudo ufw allow from 192.168.1.20 to any port 8080:8082 proto tcp", rules["ufw"])
+        self.assertIn("sudo ufw allow from 192.168.1.20 to any port 8899 proto tcp", rules["ufw"])
+        self.assertIn("ip saddr 192.168.1.20", rules["nftables"][0])
+
+    def test_ipv6_client(self):
+        rules = self.setup.firewall_rules("fd00::20")
+        self.assertIn("family=ipv6", rules["firewalld"][0])
+        self.assertIn("ip6 saddr fd00::20", rules["nftables"][0])
+
+    def test_prints_never_runs(self):
+        with mock.patch.object(self.setup.subprocess, "run") as run, \
+             mock.patch.object(self.setup.subprocess, "call") as call:
+            done, out = self.run_server("192.168.1.20")
+        self.assertTrue(done)
+        run.assert_not_called()
+        call.assert_not_called()
+        self.assertIn("sudo firewall-cmd", out)
+        self.assertIn("podman compose -f compose.yaml -f compose.cuda.yaml up -d", out)
+        self.assertIn("docker compose -f compose.yaml -f compose.cuda.docker.yaml up -d", out)
+
+    def test_files_it_makes(self):
+        self.run_server("192.168.1.20")
+        key = os.path.join(self.tmp.name, "api_key")
+        token = os.path.join(self.tmp.name, "hf_token")
+        self.assertEqual(oct(os.stat(key).st_mode & 0o777), "0o600")
+        self.assertEqual(os.path.getsize(token), 0)          # compose needs the file; empty means no token
+        self.assertTrue(os.path.exists(os.path.join(self.tmp.name, ".env")))
+
+    def test_a_token_already_there_is_kept(self):
+        with open(os.path.join(self.tmp.name, "hf_token"), "w") as f:
+            f.write("hf_mine")
+        self.run_server(None)
+        with open(os.path.join(self.tmp.name, "hf_token")) as f:
+            self.assertEqual(f.read(), "hf_mine")
+
+    def test_allow_must_be_an_address(self):
+        done, out = self.run_server("not-an-ip")
+        self.assertFalse(done)
+
+    def test_compose_files_per_gpu(self):
+        for backend, podman, docker in (("cpu", [], []), ("cuda", ["compose.cuda.yaml"], ["compose.cuda.docker.yaml"]),
+                                        ("rocm", ["compose.rocm.yaml"], ["compose.rocm.yaml"]),
+                                        ("vulkan", ["compose.vulkan.yaml"], ["compose.vulkan.yaml"])):
+            p, d = self.setup.compose_files(backend)
+            self.assertEqual(p[3:], podman)
+            self.assertEqual(d[3:], docker)
+
+
 if __name__ == "__main__":
     unittest.main()
