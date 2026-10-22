@@ -227,6 +227,61 @@ class Down(unittest.TestCase):
             self.assertEqual(lifecycle.down(("rerank",), found=found), ["luna-rerank"])
 
 
+class Reset(unittest.TestCase):
+    PS = [{"Names": ["luna-llama"], "State": "running", "Labels": {"luna.config-hash": "a"}},
+          {"Names": ["luna-tts"], "State": "running", "Labels": {"luna.config-hash": "b"}},
+          {"Names": ["luna-old"], "State": "exited", "Labels": {}},
+          {"Names": ["luna-test-chat"], "State": "running", "Labels": {}},
+          {"Names": ["nextcloud"], "State": "running", "Labels": {}}]
+    IMAGES = [{"Id": "mine", "Names": ["localhost/luna-services-llama:cpu"], "Labels": {"luna.kind": "llama"}},
+              {"Id": "deploy", "Names": ["localhost/luna-deploy-tts:cpu"], "Labels": {}},
+              {"Id": "old", "Names": ["localhost/luna-llama:cuda13"], "Labels": {"maintainer": "NVIDIA"}},
+              {"Id": "test", "Names": ["localhost/luna-test-llama:cpu"], "Labels": {}},
+              {"Id": "base", "Names": ["ghcr.io/ggml-org/llama.cpp:server"], "Labels": {}}]
+    VOLS = ["luna-models", "luna-data", "luna-tts-cache", "luna-test-models", "other"]
+    SECRETS = ["luna_api_key", "luna_hf_token", "luna_test_api_key", "someone_elses"]
+
+    def plan(self):
+        return lifecycle.reset_plan(self.PS, self.IMAGES, self.VOLS, self.SECRETS)
+
+    def test_only_luna_things(self):
+        p = self.plan()
+        self.assertEqual(p["containers"], ["luna-llama", "luna-tts"])
+        self.assertEqual(sorted(p["images"]), ["deploy", "mine"])
+        self.assertEqual(p["volumes"], ["luna-data", "luna-tts-cache"])
+        self.assertEqual(p["secrets"], ["luna_api_key", "luna_hf_token"])
+        self.assertEqual(p["models"], ["luna-models"])
+        self.assertEqual((p["strangers"], p["strange_images"]), (["luna-old"], ["old"]))
+
+    def run_reset(self, answers):
+        asked = []
+
+        def ask(question, default=True):
+            asked.append(question)
+            return answers.pop(0)
+        with mock.patch.object(lifecycle, "podman") as podman:
+            gone = lifecycle.reset(ask, out=lambda *a: None, plan=self.plan())
+        return gone, asked, [c.args for c in podman.call_args_list]
+
+    def test_asks_before_luna_models_and_keeps_it_by_default(self):
+        gone, asked, calls = self.run_reset([True, False, False])
+        self.assertIn("luna-models", asked[1])
+        self.assertNotIn("luna-models", gone)
+        self.assertNotIn(("volume", "rm", "-f", "luna-models"), calls)
+        self.assertIn(("volume", "rm", "-f", "luna-data"), calls)
+        self.assertNotIn("luna-old", gone)
+
+    def test_no_means_nothing_removed(self):
+        gone, _, calls = self.run_reset([False, False, False])
+        self.assertEqual((gone, calls), ([], []))
+
+    def test_never_test_or_other_peoples_things(self):
+        _, _, calls = self.run_reset([True, True, True])
+        flat = " ".join(" ".join(c) for c in calls)
+        for name in ("luna-test", "nextcloud", "other", "someone_elses", "base"):
+            self.assertNotIn(name, flat)
+
+
 class Podman(unittest.TestCase):
     def test_missing_podman_says_how_to_get_it(self):
         with mock.patch.object(lifecycle.shutil, "which", return_value=None):

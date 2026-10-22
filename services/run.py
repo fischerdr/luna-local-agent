@@ -13,7 +13,7 @@ Every container:
 import hashlib
 import os
 
-from services import CONTAINER, KEY_SECRET, TOKEN_SECRET
+from services import CONTAINER, KEY_SECRET, TOKEN_SECRET, VOLUME
 from services.images import NVIDIA
 from services.settings import HOST_MODELS, port
 
@@ -68,9 +68,9 @@ def run_args(role, s, model, *, image, image_id, backend, env_file, env_text,
              "--secret", f"{KEY_SECRET},target=api_key"]
     if token_fp:
         argv += ["--secret", f"{TOKEN_SECRET},target=hf_token"]
-    argv += ["-v", "luna-models:/models"]
+    argv += ["-v", f"{VOLUME['models']}:/models"]
     if role == "chat":
-        argv += ["-v", "luna-data:/data"]
+        argv += ["-v", f"{VOLUME['data']}:/data"]
     if model.host_mount:
         # Read-only, and never relabelled: on SELinux the container is
         # let through instead (label=disable).
@@ -113,7 +113,7 @@ def tts_run_args(voice, *, image, image_id, device, env_file, env_text,
     argv += ["run", "-d", "--replace", "--init", "--name", CONTAINER["tts"],
              "--label", "luna.role=tts",
              "-p", publish("127.0.0.1", port("tts", {}), inner=8899),
-             "-v", "luna-tts-cache:/cache",
+             "-v", f"{VOLUME['tts']}:/cache",
              "--env-file", env_file,
              "--health-cmd", TTS_HEALTH, "--health-interval", "30s", "--health-start-period", "10m"]
     if device == "cuda":

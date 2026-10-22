@@ -12,7 +12,7 @@ import shutil
 import subprocess
 import sys
 
-from services import (CONTAINER, KEY_SECRET, LLAMA_DIR, LLAMA_ROLES, ROOT, TOKEN_SECRET, HERE,
+from services import (CONTAINER, KEY_SECRET, LLAMA_DIR, LLAMA_ROLES, ROOT, TOKEN_SECRET, VOLUME, HERE,
                       images, keys, lifecycle, settings)
 
 LOCAL_ENV = os.path.join(HERE, "services.local.env")
@@ -206,7 +206,7 @@ def setup(a, gpu="auto"):
                 return False
             ok(f"built {images.tag(b)}")
 
-    for vol in ("luna-models", "luna-data"):
+    for vol in (VOLUME["models"], VOLUME["data"]):
         if lifecycle.podman("volume", "exists", vol).returncode == 0:
             continue
         show(["podman", "volume", "create", vol])
@@ -306,10 +306,10 @@ def setup_tts(a):
             return False
         ok(f"built {images.tag(build, 'tts')}")
 
-    if lifecycle.podman("volume", "exists", "luna-tts-cache").returncode:
-        show(["podman", "volume", "create", "luna-tts-cache"])
-        if a.ask("Create the luna-tts-cache volume (the voice model, about 330 MB, downloads into it once)?"):
-            lifecycle.podman("volume", "create", "luna-tts-cache", check=True)
+    if lifecycle.podman("volume", "exists", VOLUME["tts"]).returncode:
+        show(["podman", "volume", "create", VOLUME["tts"]])
+        if a.ask(f"Create the {VOLUME['tts']} volume (the voice model, about 330 MB, downloads into it once)?"):
+            lifecycle.podman("volume", "create", VOLUME["tts"], check=True)
 
     v = lifecycle.voice_state()
     url = "http://127.0.0.1:8899"

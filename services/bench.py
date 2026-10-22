@@ -24,7 +24,7 @@ import time
 
 import requests
 
-from services import CONTAINER, KEY_SECRET, LLAMA_DIR, images, keys, lifecycle, settings
+from services import CONTAINER, KEY_SECRET, LLAMA_DIR, VOLUME, images, keys, lifecycle, settings
 
 SPARE = 0.10            # of the VRAM, kept free
 RERANK_CPU_MAX = 1.5    # seconds for a 24-candidate rerank
@@ -75,7 +75,7 @@ def model_mib(m, s):
         root = os.path.realpath(os.path.expanduser(s["LUNA_MODELS_DIR"]))
         path = os.path.join(root, m.file[len(settings.HOST_MODELS) + 1:])
         return os.path.getsize(path) // MIB if os.path.exists(path) else 0
-    found = lifecycle.podman("run", "--rm", "--entrypoint", "sh", "-v", "luna-models:/models:ro",
+    found = lifecycle.podman("run", "--rm", "--entrypoint", "sh", "-v", f"{VOLUME['models']}:/models:ro",
                              images.find("cpu") or "", "-c",
                              f"du -Lbc $(find /models -iname '*{m.hf.split('/')[-1].split(':')[0]}*' "
                              "-name '*.gguf' ! -iname '*mmproj*' 2>/dev/null) 2>/dev/null | tail -1")
@@ -113,7 +113,7 @@ def cpu_timing(role, s, m, key, out=print):
     name = f"luna-bench-{role}"
     env = settings.env_lines(role, dict(s, EMBED_NGL="0", RERANK_NGL="0"), m)
     args = ["run", "-d", "--replace", "--name", name, "-p", f"127.0.0.1:{port}:8080",
-            "-v", "luna-models:/models", "--secret", f"{KEY_SECRET},target=api_key"]
+            "-v", f"{VOLUME['models']}:/models", "--secret", f"{KEY_SECRET},target=api_key"]
     if m.host_mount:
         args += ["-v", f"{os.path.realpath(os.path.expanduser(s['LUNA_MODELS_DIR']))}:{settings.HOST_MODELS}:ro",
                  "--security-opt", "label=disable"]

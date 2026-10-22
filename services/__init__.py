@@ -24,7 +24,8 @@ ROLES = LLAMA_ROLES + ("tts",)
 # One container per role, and its volumes and secrets. Every name starts
 # with luna-/luna_, which is all reset ever removes.
 CONTAINER = {"chat": "luna-llama", "embed": "luna-embed", "rerank": "luna-rerank", "tts": "luna-tts"}
-VOLUMES = ("luna-models", "luna-data", "luna-tts-cache")
+VOLUME = {"models": "luna-models", "data": "luna-data", "tts": "luna-tts-cache"}
+VOLUMES = tuple(VOLUME.values())
 KEY_SECRET = "luna_api_key"
 TOKEN_SECRET = "luna_hf_token"
 

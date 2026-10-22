@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 
 import requests
 
-from services import CONTAINER, LLAMA_ROLES, MIN_PODMAN, ROLES, ROOT, images, keys, run, settings
+from services import CONTAINER, LLAMA_ROLES, MIN_PODMAN, ROLES, ROOT, VOLUME, images, keys, run, settings
 
 
 @dataclass
@@ -100,7 +100,7 @@ def containers(ps=None):
     for c in ps:
         names = c.get("Names") or []
         name = names[0] if isinstance(names, list) and names else str(names)
-        if name.startswith("luna-") and not name.startswith("luna-test-"):
+        if name in CONTAINER.values() or (name.startswith("luna-") and not name.startswith("luna-test-")):
             found[name] = {"state": c.get("State", ""), "labels": c.get("Labels") or {}}
     return found
 
@@ -192,9 +192,9 @@ def trouble(role, log=None):
 def volume_find(image):
     """A search of the luna-models volume, for MATCH patterns."""
     def find(pattern):
-        if podman("volume", "exists", "luna-models").returncode:
+        if podman("volume", "exists", VOLUME["models"]).returncode:
             return []
-        out = podman("run", "--rm", "--entrypoint", "find", "-v", "luna-models:/models:ro", image,
+        out = podman("run", "--rm", "--entrypoint", "find", "-v", f"{VOLUME['models']}:/models:ro", image,
                      "/models", "-maxdepth", "5", "-iname", f"{pattern}.gguf", "!", "-iname", "*mmproj*").stdout
         return sorted(ln for ln in out.splitlines() if ln)
     return find
@@ -366,3 +366,71 @@ def status(s, found=None, get=requests.get):
         lines.append((code == 200 and ours, f"{role:7} {name}: {c['state']}, {health} on {url}"
                       + ("" if ours else "  (not made by python -m services)")))
     return lines
+
+
+# --- reset ------------------------------------------------------------------
+OUR_TAGS = ("localhost/luna-services-", "localhost/luna-deploy-")
+
+
+def reset_plan(ps=None, imgs=None, vols=None, secrets=None):
+    """What reset would remove: {"containers", "images", "volumes",
+    "secrets", "models", "strangers"}. Only luna-* things: ours by label
+    or our own names; luna-models (your downloads) and luna-* things some
+    other setup made are listed apart, to be asked about on their own."""
+    found = containers(ps)
+    if imgs is None:
+        imgs = json.loads(podman("images", "--format", "json").stdout or "[]")
+    if vols is None:
+        vols = podman("volume", "ls", "--format", "{{.Name}}").stdout.split()
+    if secrets is None:
+        secrets = podman("secret", "ls", "--format", "{{.Name}}").stdout.split()
+    ours = sorted(n for n, c in found.items() if "luna.config-hash" in c["labels"])
+    strangers = sorted(n for n, c in found.items() if "luna.config-hash" not in c["labels"])
+    images_ours, images_strange = [], []
+    for img in imgs:
+        names = img.get("Names") or []
+        labels = img.get("Labels") or {}
+        ident = img.get("Id") or img.get("ID")
+        if "luna.kind" in labels or any(n.startswith(OUR_TAGS) for n in names):
+            images_ours.append(ident)
+        elif any(n.startswith("localhost/luna-") and not n.startswith("localhost/luna-test-") for n in names):
+            images_strange.append(ident)
+    return {"containers": ours, "images": images_ours,
+            "volumes": [v for v in (VOLUME["data"], VOLUME["tts"]) if v in vols],
+            "secrets": [s for s in (keys.KEY_SECRET, keys.TOKEN_SECRET) if s in secrets],
+            "models": [v for v in (VOLUME["models"],) if v in vols],
+            "strangers": strangers, "strange_images": images_strange}
+
+
+def reset(ask, out=print, plan=None):
+    """Remove what python -m services made (asking first), and luna-models
+    and other luna-* things only if asked separately. The names removed."""
+    plan = plan or reset_plan()
+    gone = []
+    mine = plan["containers"] + plan["volumes"] + plan["secrets"]
+    if mine or plan["images"]:
+        out("  Ours: " + ", ".join(mine + [f"{len(plan['images'])} image(s)"]))
+        if ask("Remove them?"):
+            for name in plan["containers"]:
+                podman("rm", "-f", "-t", "5", name)
+            for ident in plan["images"]:
+                podman("rmi", "-f", ident)
+            for vol in plan["volumes"]:
+                podman("volume", "rm", "-f", vol)
+            for secret in plan["secrets"]:
+                podman("secret", "rm", secret)
+            gone += mine + plan["images"]
+    if plan["models"] and ask(f"Remove {plan['models'][0]} too (the downloaded models - they'd download again)?",
+                              default=False):
+        podman("volume", "rm", "-f", plan["models"][0])
+        gone.append(plan["models"][0])
+    if plan["strangers"] or plan["strange_images"]:
+        out("  Not made by python -m services: " + ", ".join(
+            plan["strangers"] + [f"{len(plan['strange_images'])} image(s) named localhost/luna-*"]))
+        if ask("Remove those as well?", default=False):
+            for name in plan["strangers"]:
+                podman("rm", "-f", "-t", "5", name)
+            for ident in plan["strange_images"]:
+                podman("rmi", "-f", ident)
+            gone += plan["strangers"] + plan["strange_images"]
+    return gone

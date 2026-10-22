@@ -8,6 +8,7 @@
     python -m services status         each one, and whether it answers
     python -m services logs ROLE      a container's log (-f follows it)
     python -m services bench          where the side models go on a small GPU
+    python -m services reset          remove what it made (asks; your models only if you say)
 
 Roles: chat, embed, rerank, tts. Settings: llama/server.env (as for
 llama/start.sh), then services/services.env.
@@ -102,6 +103,15 @@ def cmd_bench(args):
     return 0 if bench(Asker(args.yes)) else 1
 
 
+def cmd_reset(args):
+    """Remove what python -m services made; luna-models only if asked."""
+    from services.setup import Asker
+
+    gone = lifecycle.reset(Asker(args.yes).ask)
+    print("  removed: " + ", ".join(gone) if gone else "  nothing removed")
+    return 0
+
+
 def cmd_setup(args):
     """The setup steps (services/setup.py)."""
     from services.setup import Asker, setup, setup_tts
@@ -139,6 +149,9 @@ def main(argv=None):
     p = sub.add_parser("bench", help="where the embedder and reranker should run on this GPU")
     p.add_argument("--yes", action="store_true", help="write the recommendation without asking")
     p.set_defaults(func=cmd_bench)
+    p = sub.add_parser("reset", help="remove our containers, images, volumes and secrets (asks first)")
+    p.add_argument("--yes", action="store_true", help="remove ours without asking (luna-models and other luna-* things stay)")
+    p.set_defaults(func=cmd_reset)
     p = sub.add_parser("logs", help="a container's log")
     p.add_argument("role", choices=tuple(CONTAINER))
     p.add_argument("-f", "--follow", action="store_true")
