@@ -9,6 +9,9 @@ Any arguments are passed on to main.py. Before her:
   server.mac.env on a Mac, by itself. Off with "llm": {"autostart":
   false}, or llm.backend "lmstudio".
 - the voice server, if the installer set one up.
+- the backend containers (python -m services), when config.json has
+  "services": {"autostart": true}; stopped again when she exits unless
+  "stop_on_exit" is false.
 
 Each is started only if it isn't already answering, and stopped again
 when she exits - one that was already running before is left alone.
@@ -199,6 +202,62 @@ def start_voice(v):
 
 
 # ---------------------------------------------------------------------------
+# Containers: python -m services, only when config.json asks for them
+# ---------------------------------------------------------------------------
+def start_services():
+    """config.json "services": {"autostart": true} - her backend containers
+    up (or kept) before her, the way python -m services up does it. Never
+    holds her start up: a role that won't come gets one line. Returns
+    (lifecycle, the roles it started, every role it handles) or None."""
+    svc = settings().get("services") or {}
+    if svc.get("autostart") is not True or not sys.platform.startswith("linux"):
+        return None
+    import shutil
+
+    if not shutil.which("podman"):
+        print("services.autostart is on, but Podman isn't installed - starting without the containers.",
+              file=sys.stderr)
+        return None
+    try:
+        from services import keys, lifecycle, settings as service_settings
+
+        s = service_settings.load()
+        results = lifecycle.up(s, lifecycle.default_roles(), keys.token_source()[0])
+    except Exception as e:
+        print(f"The containers didn't come up ({e}) - starting without them.", file=sys.stderr)
+        return None
+
+    handled = {r.role: r.state for r in results if r.state in ("kept", "started")}
+    for r in results:
+        if r.role not in handled:
+            print(f"  {r.role} container: {r.note}", file=sys.stderr)
+    timeout = float(s.get("READY_TIMEOUT") or 600)
+    try:
+        for role in handled:
+            port = service_settings.port(role, s)
+            print(f"Starting her {role} container", end="", flush=True)
+            ready = lifecycle.wait_ready(f"http://127.0.0.1:{port}", timeout, alive=lifecycle.running(role),
+                                         pause=lambda sec: (time.sleep(sec), print(".", end="", flush=True)))
+            print(" ready." if ready else " still not ready - python -m services logs " + role)
+    except KeyboardInterrupt:
+        print(" - not waiting; it carries on loading")
+    return lifecycle, [role for role, how in handled.items() if how == "started"], handled
+
+
+def stop_services(svc):
+    """What start_services() started, unless services.stop_on_exit is false.
+    Containers that were already running are left alone."""
+    if not svc or (settings().get("services") or {}).get("stop_on_exit", True) is False:
+        return
+    lifecycle, started, _ = svc
+    if started:
+        try:
+            lifecycle.down(started)
+        except Exception as e:
+            print(f"Couldn't stop the containers ({e}) - python -m services down does.", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
 # Packages: what installer/requirements.txt asks for, against what's installed
 # ---------------------------------------------------------------------------
 REQUIREMENTS = os.path.join(ROOT, "installer", "requirements.txt")
@@ -352,18 +411,24 @@ def main():
 
     ensure_packages(py)
     s = state()
-    llama = start_llama(s)
+    svc = start_services()          # None unless config.json says services.autostart
+    handled = svc[2] if svc else {}
+    # A chat container, even one still loading, is her model: no llama/start.sh beside it.
+    llama = None if "chat" in handled else start_llama(s)
     voice = None
     v = s.get("voice", {})
     url = tts_url()
-    if v.get("mode") == "managed" and _here(url):   # a voice on another machine needs nothing started here
+    if "tts" not in handled and v.get("mode") == "managed" and _here(url):   # a voice on another machine needs nothing started here
         voice = start_voice(v)
 
     warnings = []
     if not model_up():
-        warnings.append("No model server - open LM Studio's Local Server, or run llama/start.sh.")
+        warnings.append("Her model is still loading in its container - she'll find it when it's up."
+                        if "chat" in handled else
+                        "No model server - open LM Studio's Local Server, or run llama/start.sh.")
     if not (v.get("mode") == "managed" and _here(url)) and v.get("mode") != "none" and not up(url + "/health"):
-        warnings.append(f"No voice server at {url} - she'll start text-only.")
+        warnings.append(f"Her voice is still loading in its container at {url}." if "tts" in handled else
+                        f"No voice server at {url} - she'll start text-only.")
     if warnings:
         print("Starting anyway:\n  " + "\n  ".join(warnings), file=sys.stderr)
 
@@ -379,6 +444,7 @@ def main():
             except subprocess.TimeoutExpired:
                 voice.kill()
         stop_group(llama)
+        stop_services(svc)
     sys.exit(code)
 
 

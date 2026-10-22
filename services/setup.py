@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 
@@ -190,8 +191,42 @@ def setup(a, gpu="auto"):
         except settings.SettingsError as e:
             warn(str(e))
 
-    print("  Next: python -m services up")
+    autostart(a)
+    print("  Next: python -m services up" + ("" if config_services().get("autostart") else ", or ./start.sh"))
     return True
+
+
+def config_services():
+    """config.json's "services" block (yours, never in git)."""
+    try:
+        with open(os.path.join(ROOT, "config.json"), encoding="utf-8") as f:
+            return (json.load(f) or {}).get("services") or {}
+    except (OSError, ValueError):
+        return {}
+
+
+def autostart(a):
+    """Step 11: ./start.sh brings the containers up with her, and down after."""
+    if config_services().get("autostart") is True:
+        ok("./start.sh starts the containers with her (config.json services.autostart)")
+        return
+    if not a.ask("Start the containers with Luna when you run ./start.sh?"):
+        return
+    path = os.path.join(ROOT, "config.json")
+    example = os.path.join(ROOT, "config.example.json")
+    if not os.path.exists(path) and os.path.exists(example):
+        shutil.copyfile(example, path)
+    try:
+        with open(path, encoding="utf-8") as f:
+            cfg = json.load(f)
+    except (OSError, ValueError):
+        warn("config.json couldn't be read - add \"services\": {\"autostart\": true} yourself")
+        return
+    cfg.setdefault("services", {})["autostart"] = True
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=4, ensure_ascii=False)
+        f.write("\n")
+    ok("config.json: services.autostart - ./start.sh starts them, and stops them when she exits")
 
 
 def save_voice(url):
