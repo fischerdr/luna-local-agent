@@ -92,6 +92,12 @@ needed. `LUNA_CONTAINER_TESTS=1` (or `full`) with
 `python -m unittest discover -v tests/containers` runs the container
 tests, on their own `luna-test-*` containers.
 
+From zero, as a new user: `tests/zero/isolated.sh` installs it all again
+beside your own setup, and checks it. On your own install,
+`tests/zero/wipe.sh`, then `./installer/install.sh` and
+`tests/zero/check.sh`, then `tests/zero/restore.sh <backup>`
+([details](docs/containers.md#from-zero)).
+
 ## Troubleshooting
 
 - Logs: `podman logs luna-llama` (or `luna-embed`, `luna-rerank`, `luna-tts`).

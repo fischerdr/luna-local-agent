@@ -343,6 +343,42 @@ LUNA_CONTAINER_TESTS=full ...       # also the reasoning and vision rows
 They download a few small public models once, into `luna-test-models`.
 `LUNA_TEST_GATED=<user>/<repo>` also tries a gated model with your token.
 
+### From zero
+
+To see what a new user sees, install it all again from nothing:
+
+```bash
+tests/zero/isolated.sh            # beside your own setup, which isn't touched
+tests/zero/isolated.sh --clean    # remove it afterwards
+```
+
+It makes a fresh clone of this branch (what's committed), with a HOME of
+its own and a Podman storage of its own: its own images, volumes and
+secrets, so everything downloads again. Then it runs the installer as a
+new user would, starts the containers and checks them. It uses the real
+ports, so your own `luna-*` containers are stopped while it runs and
+started again after. It needs about 30 GB (`ZERO_DIR` moves it).
+`ZERO_ARGS` changes the installer's flags; without `--yes` you answer
+its questions yourself. `ZERO_WIPE_TEST=1` also tests the next two.
+
+On your own install:
+
+```bash
+tests/zero/wipe.sh                # back up, then remove it all
+./installer/install.sh            # a first run, as a new user
+tests/zero/check.sh               # does everything answer?
+tests/zero/restore.sh <backup>    # put yours back
+```
+
+`wipe.sh` backs up config.json, install.json, `llama/.api_key`,
+`llama/server.local.env`, `services/services.local.env` and deploy's
+files, and exports the volumes. Then it removes the containers, our
+images and upstream's base images, the secrets and the env-files.
+`ZERO_VENV=1` also moves Luna's Python environment aside, and
+`ZERO_OLD=1` removes images an older setup left. Your models folder, your
+Hugging Face token and her memory (`agent/`) are never touched.
+`check.sh` only reads, apart from caching three test facts' vectors.
+
 ## What was checked
 
 On Fedora 43 (SELinux), rootless Podman 5.8.8, an RTX 3070 (8 GB, CUDA 13).
