@@ -174,7 +174,7 @@ services.env adds:
 | `RERANK_HF` | `ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF:Q8_0` | the reranker |
 | `LUNA_MODELS_DIR` | (none) | your own GGUFs, mounted read-only |
 | `EMBED_NGL` | `0` | the embedder's GPU layers: 0 is the CPU |
-| `RERANK_NGL` | `99` | the reranker's GPU layers |
+| `RERANK_NGL` | `0` | the reranker's GPU layers (bench raises it when there's room) |
 | `LLAMA_BACKEND` | `auto` | the image: `auto`, `cpu`, `cuda`, `cuda13`, `rocm`, `vulkan` |
 | `TTS_DEVICE` | `auto` | the voice: `auto` (the GPU on NVIDIA), `cpu`, `cuda` |
 | `READY_TIMEOUT` | `600` | seconds `up` waits for each to answer |
@@ -186,26 +186,25 @@ GPU at all, so it takes no video memory.
 
 ## Small GPUs
 
-With containers, the installer's model pick keeps room on the GPU for
-what shares it: about 1 GB for the reranker, and 1 GB more when the voice
+On this machine the GPU goes to chat and her voice first. The reranker
+and the embedder get it only when there's room left after them;
+otherwise they run on the CPU, where the embedder takes about 30 ms a
+query and a slow rerank only means recall keeps the embedding order.
+
+The installer's model pick keeps about 1 GB free for the voice when it
 runs on an NVIDIA card. On 8 GB that's Qwen3.5 4B (Q6_K, with vision)
 rather than the 9B, which is one `--model 9b-q4` away.
-
-On an 8 GB card, a 4B chat model, the embedder and the reranker fit
-together; a bigger model or a long `CTX` may not. The embedder runs on
-the CPU anyway: a query is a few dozen tokens, about 30 ms there.
 
 ```bash
 python -m services bench
 ```
 
-measures where the reranker should go. It goes on the GPU when chat and
-it fit with 10% to spare. Otherwise it goes on the CPU, if a rerank of 24
-facts takes under 1.5 seconds there. Otherwise it's turned off
-(`RERANK=off`), and recall keeps the embedding order. It writes the
-answer only if you say so: `EMBED_NGL` and `RERANK_NGL` to
-services.local.env, `RERANK=off` to llama/server.local.env. Setup offers
-to run it once.
+measures the room: chat (by its size and `CTX` when it isn't running),
+then the voice, then the reranker, then the embedder, each on the GPU
+only if it fits with 10% of the card kept free. It writes `TTS_DEVICE`,
+`RERANK_NGL` and `EMBED_NGL` to services.local.env only if you say so.
+Setup offers to run it on a machine with a GPU. A remote server's
+placement is its own (`deploy/.env`).
 
 Or have them only while they're used: `EMBED_ONDEMAND=on` in
 services.local.env. Then `up` and `./start.sh` leave the embedder and
@@ -216,9 +215,8 @@ been wanted for `EMBED_IDLE` (or `RERANK_IDLE`) seconds, it's stopped
 again. Only ones started this way are stopped, and only when they run
 on this machine.
 
-The voice on the GPU wants about 1 GB too. On a small card,
-`TTS_DEVICE=cpu` leaves that to chat; Kokoro speaks faster than real time
-on the CPU.
+`TTS_DEVICE=cpu` puts the voice on the CPU yourself: Kokoro speaks
+faster than real time there too.
 
 ## GPUs
 

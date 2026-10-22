@@ -664,15 +664,16 @@ def pick_model(vram, reserve=0):
 
 
 def gpu_reserve(state):
-    """GB the containers put on the GPU beside her model: the reranker
-    (about 1 GB), and the voice when it runs on an NVIDIA card with a CDI
-    spec (about 1 GB). 0 for every other backend: main's pick, as it was."""
+    """GB the containers keep on the GPU beside her model: her voice's
+    (about 1 GB), when it runs on an NVIDIA card with a CDI spec. Chat and
+    voice come first; the reranker and embedder take what's left, or the
+    CPU. 0 for every other backend: main's pick, as it was."""
     if state.get("backend") != "container":
         return 0
     voice_gpu = (state.get("voice", {}).get("container") and shutil.which("nvidia-smi")
                  and any(os.path.exists(p) for p in ("/etc/cdi/nvidia.yaml",
                                                      os.path.expanduser("~/.config/cdi/nvidia.yaml"))))
-    return 1.0 + (1.0 if voice_gpu else 0)
+    return 1.0 if voice_gpu else 0
 
 
 def _model_by_key(key):
@@ -717,8 +718,7 @@ def model(state):
 
     key, label, repo, file, size, mmproj, _least, ctx, lms_name = m
     if vram:
-        kept = (f", {reserve:g} GB of it kept for the reranker" + (" and her voice" if reserve > 1 else "")
-                if reserve else "")
+        kept = f", {reserve:g} GB of it kept for her voice" if reserve else ""
         ok(f"{vram} GB to work with ({where}){kept}")
     else:
         warn(f"{where} - picking a small model that also runs on the CPU (slower)")
