@@ -55,5 +55,118 @@ class Voice(unittest.TestCase):
         self.assertEqual(out, "true")
 
 
+TOOL = {"type": "function", "function": {"name": "get_datetime", "description": "The current date and time.",
+                                         "parameters": {"type": "object", "properties": {}}}}
+
+
+@live
+class Llama(unittest.TestCase):
+    """llama-server in its container, asked what Luna asks it."""
+
+    @classmethod
+    def setUpClass(cls):
+        m = support.models()
+        cls.key = support.make_key()
+        try:
+            env = {"CTX": "4096", "PARALLEL": "2", "NGL": "0", "ALIAS": "luna-test-model"}
+            support.start("chat", m["TEST_CHAT_HF"], env)
+            support.wait_ready("chat")
+        except Exception:
+            support.cleanup("chat")
+            raise
+
+    @classmethod
+    def tearDownClass(cls):
+        support.cleanup("chat")
+
+    def post(self, body, **kw):
+        return requests.post(url("chat", "/v1/chat/completions"), timeout=180,
+                             headers={"Authorization": f"Bearer {self.key}", **kw.pop("headers", {})},
+                             json=body, **kw)
+
+    def chat(self, text, **more):
+        return self.post({"messages": [{"role": "user", "content": text}], "max_tokens": 64, **more})
+
+    def test_token_confidence_streamed(self):
+        r = self.post({"messages": [{"role": "user", "content": "Say hello."}], "max_tokens": 8,
+                       "stream": True, "n_probs": 3}, stream=True)
+        self.assertEqual(r.status_code, 200)
+        import json
+
+        probs = []
+        for line in r.iter_lines():
+            if line.startswith(b"data: ") and line != b"data: [DONE]":
+                choice = (json.loads(line[6:]).get("choices") or [{}])[0]
+                if choice.get("logprobs"):
+                    probs += choice["logprobs"].get("content") or []
+        self.assertTrue(probs, "no per-token probabilities in the stream")
+        self.assertIn("top_logprobs", probs[0])
+
+    def test_thinking_budget(self):
+        off = self.chat("What is 2+2?", reasoning_budget_tokens=0).json()["choices"][0]["message"]
+        self.assertFalse((off.get("reasoning_content") or "").strip())
+        on = self.chat("What is 17*3? Think it through.", max_tokens=200).json()["choices"][0]["message"]
+        self.assertTrue((on.get("reasoning_content") or "").strip(), "no reasoning_content with no budget")
+
+    def test_tool_calls(self):
+        r = self.chat("What time is it? Use your tool.", tools=[TOOL], max_tokens=300,
+                      reasoning_budget_tokens=0).json()
+        calls = r["choices"][0]["message"].get("tool_calls") or []
+        self.assertTrue(calls, r)
+        self.assertEqual(calls[0]["function"]["name"], "get_datetime")
+
+    def test_the_model_is_named_by_alias(self):
+        r = requests.get(url("chat", "/v1/models"), headers={"Authorization": f"Bearer {self.key}"}, timeout=5)
+        self.assertEqual(r.json()["data"][0]["id"], "luna-test-model")
+
+    def test_key_and_cors(self):
+        self.assertEqual(requests.post(url("chat", "/v1/chat/completions"), json={}, timeout=5).status_code, 401)
+        here = requests.options(url("chat", "/v1/chat/completions"), timeout=5,
+                                headers={"Origin": "http://localhost", "Access-Control-Request-Method": "POST"})
+        away = requests.options(url("chat", "/v1/chat/completions"), timeout=5,
+                                headers={"Origin": "http://evil.example", "Access-Control-Request-Method": "POST"})
+        self.assertIn("localhost", here.headers.get("Access-Control-Allow-Origin", ""))
+        self.assertNotIn("evil.example", away.headers.get("Access-Control-Allow-Origin", ""))
+
+    def test_props_show_ctx_and_parallel(self):
+        p = requests.get(url("chat", "/props"), headers={"Authorization": f"Bearer {self.key}"}, timeout=5).json()
+        self.assertEqual(p["total_slots"], 2)
+        ctx = p["default_generation_settings"].get("n_ctx")
+        self.assertIn(ctx, (4096, 2048))          # KV_UNIFIED shares CTX, else a share per slot
+        self.assertFalse(p["modalities"]["vision"])
+
+    def test_slots_save_and_restore(self):
+        self.chat("Remember the word banana.")
+        auth = {"Authorization": f"Bearer {self.key}"}
+        saved = requests.post(url("chat", "/slots/0?action=save"), json={"filename": "parity.bin"},
+                              headers=auth, timeout=30)
+        self.assertEqual(saved.status_code, 200, saved.text)
+        restored = requests.post(url("chat", "/slots/0?action=restore"), json={"filename": "parity.bin"},
+                                 headers=auth, timeout=30)
+        self.assertEqual(restored.status_code, 200, restored.text)
+        self.assertIn("parity.bin", support.podman("exec", "luna-test-chat", "ls", "/data/slots").stdout)
+
+
+@support.full
+class Vision(unittest.TestCase):
+    """LUNA_CONTAINER_TESTS=full: a small vision model and its mmproj."""
+
+    def props(self, env):
+        support.make_key()
+        try:
+            support.start("chat", support.models()["TEST_VISION_HF"], dict({"CTX": "2048", "NGL": "0"}, **env))
+            support.wait_ready("chat")
+            key = support.podman("exec", "luna-test-chat", "cat", "/run/secrets/api_key").stdout
+            return requests.get(url("chat", "/props"), headers={"Authorization": f"Bearer {key}"}, timeout=5).json()
+        finally:
+            support.cleanup("chat")
+
+    def test_vision_with_its_mmproj(self):
+        self.assertTrue(self.props({})["modalities"]["vision"])
+
+    def test_mmproj_off(self):
+        self.assertFalse(self.props({"MMPROJ": "off"})["modalities"]["vision"])
+
+
 if __name__ == "__main__":
     unittest.main()
