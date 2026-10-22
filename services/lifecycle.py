@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 
 import requests
 
-from services import CONTAINER, LLAMA_ROLES, MIN_PODMAN, ROLES, images, keys, run, settings
+from services import CONTAINER, LLAMA_ROLES, MIN_PODMAN, ROLES, ROOT, images, keys, run, settings
 
 
 @dataclass
@@ -189,14 +189,19 @@ def plan(role, s, ctx, image_for=None):
 
 def ensure(role, s, ctx, found=None):
     """Bring one llama role up, or keep it: a Result."""
-    found = containers() if found is None else found
     try:
         argv, env_text, model = plan(role, s, ctx)
     except settings.SettingsError as e:
         return Result(role, "failed", str(e))
     if argv is None:
         return Result(role, "skipped", env_text)
+    return apply(role, argv, env_text, model.label(), settings.port(role, s), found)
 
+
+def apply(role, argv, env_text, label, host_port, found=None):
+    """Keep the role's container if it's current, else (re)make it - unless
+    it isn't ours, or something else holds its port."""
+    found = containers() if found is None else found
     name = CONTAINER[role]
     have = found.get(name)
     if have and "luna.config-hash" not in have["labels"]:
@@ -204,13 +209,13 @@ def ensure(role, s, ctx, found=None):
                                        "python -m services setup asks before replacing it")
     want = argv[-2].split("=", 1)[1]
     if have and have["labels"].get("luna.config-hash") == want and have["state"] == "running":
-        return Result(role, "kept", model.label())
+        return Result(role, "kept", label)
 
     if not (have and have["state"] == "running"):
-        holder = port_holder(settings.port(role, s))
+        holder = port_holder(host_port)
         if holder:
-            return Result(role, "skipped", f"port {settings.port(role, s)} is taken by {holder} "
-                                           "(a host llama/start.sh, LM Studio?) - leaving it be")
+            return Result(role, "skipped", f"port {host_port} is taken by {holder} "
+                                           "(a host llama/start.sh, LM Studio, a host voice?) - leaving it be")
 
     env_file = argv[argv.index("--env-file") + 1]
     with open(env_file, "w", encoding="utf-8") as f:
@@ -219,22 +224,79 @@ def ensure(role, s, ctx, found=None):
     if r.returncode:
         last = (r.stderr.strip().splitlines() or ["podman run failed"])[-1]
         return Result(role, "failed", last)
-    return Result(role, "started", model.label())
+    return Result(role, "started", label)
+
+
+# --- the voice --------------------------------------------------------------
+def voice_state():
+    """The voice in install.json: how the installer set it up."""
+    try:
+        with open(os.path.join(ROOT, "install.json"), encoding="utf-8") as f:
+            return (json.load(f) or {}).get("voice") or {}
+    except (OSError, ValueError):
+        return {}
+
+
+def config_voice():
+    """config.json's voice - the one she speaks with - for the server's default."""
+    try:
+        with open(os.path.join(ROOT, "config.json"), encoding="utf-8") as f:
+            return str((json.load(f) or {}).get("voice") or "af_bella")
+    except (OSError, ValueError):
+        return "af_bella"
+
+
+def default_roles():
+    """What up starts when no roles are named: the llama roles, and the
+    voice once setup tts has moved it into its container."""
+    return LLAMA_ROLES + (("tts",) if voice_state().get("container") == CONTAINER["tts"] else ())
+
+
+def tts_device(s, backend):
+    """The voice's device: cuda when TTS_DEVICE allows it and the machine is NVIDIA with CDI, else cpu."""
+    want = (s.get("TTS_DEVICE") or "auto").lower()
+    return "cuda" if want in ("auto", "cuda") and backend in images.NVIDIA else "cpu"
+
+
+def ensure_tts(s, ctx, found=None, voice_mode=None):
+    """The voice container, kept or (re)made: a Result. Never while the
+    installer's host voice (managed) owns :8899."""
+    mode = voice_state().get("mode") if voice_mode is None else voice_mode
+    if mode == "managed":
+        return Result("tts", "skipped", "her voice is the host's kokoro-reader (install.json: managed) - "
+                                        "python -m services setup tts moves it into a container")
+    device = tts_device(s, ctx.backend)
+    build = images.tts_backend(ctx.backend) if device == "cuda" else "cpu"
+    image_id = ctx.image_ids.get(("tts", build))
+    if not image_id:
+        return Result("tts", "skipped", f"no {build} voice image yet - python -m services setup tts builds it")
+    voice = config_voice()
+    env_text = f"KOKORO_DEVICE={device}\nKOKORO_VOICE={voice}\n"
+    argv = run.tts_run_args(voice, image=image_id, image_id=image_id, device=device,
+                            env_file=os.path.join(env_dir(), "tts.env"), env_text=env_text,
+                            selinux=ctx.selinux, cdi_dir=ctx.cdi_dir)
+    return apply("tts", argv, env_text, f"kokoro, {voice}, on the {device}", settings.TTS_PORT, found)
 
 
 def up(s, roles=LLAMA_ROLES, token="", out=print):
     """Secrets current, then each role kept or (re)made. [Result]."""
-    if not keys.read_key():
-        keys.make_key()
-        out("Made llama/.api_key - Luna and the containers share it.")
-    if keys.sync(keys.read_key(), token):
-        out("Secrets updated - their containers are made anew.")
+    if any(role in LLAMA_ROLES for role in roles):
+        # The voice takes no key: only the llama roles need these.
+        if not keys.read_key():
+            keys.make_key()
+            out("Made llama/.api_key - Luna and the containers share it.")
+        if keys.sync(keys.read_key(), token):
+            out("Secrets updated - their containers are made anew.")
     ctx, note = context(s, token)
     if note:
         out("  " + note)
     ctx.image_ids = {b: images.find(b) for b in {ctx.backend, "cpu"}}
+    ctx.image_ids.update({("tts", b): images.find(b, kind="tts") for b in {images.tts_backend(ctx.backend), "cpu"}})
     found = containers()
-    return [ensure(role, s, ctx, found) for role in roles if role in LLAMA_ROLES]
+    results = [ensure(role, s, ctx, found) for role in roles if role in LLAMA_ROLES]
+    if "tts" in roles:
+        results.append(ensure_tts(s, ctx, found))
+    return results
 
 
 def down(roles=ROLES, found=None):

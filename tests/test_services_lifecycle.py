@@ -118,6 +118,42 @@ class KeepOrReplace(Base):
         self.assertEqual((r.state, r.note), ("failed", "Error: the real reason"))
 
 
+class Voice(Base):
+    def setUp(self):
+        super().setUp()
+        self.ctx.image_ids.update({("tts", "cpu"): "TTSCPU", ("tts", "cuda13"): "TTSGPU"})
+        p = mock.patch.object(lifecycle, "config_voice", return_value="luna")
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_never_while_the_host_voice_is_managed(self):
+        r = lifecycle.ensure_tts(base_settings(), self.ctx, found={}, voice_mode="managed")
+        self.assertEqual(r.state, "skipped")
+        self.assertIn("setup tts", r.note)
+        self.assertEqual(self.runs(), [])
+
+    def test_starts_with_the_configured_voice(self):
+        r = lifecycle.ensure_tts(base_settings(), self.ctx, found={}, voice_mode="external")
+        self.assertEqual(r.state, "started")
+        with open(os.path.join(self.tmp.name, "tts.env")) as f:
+            self.assertIn("KOKORO_VOICE=luna", f.read())
+
+    def test_gpu_on_nvidia_unless_told_cpu(self):
+        lifecycle.ensure_tts(base_settings(), self.ctx, found={}, voice_mode="external")
+        self.assertEqual(self.runs()[-1][-1], "TTSGPU")
+        lifecycle.ensure_tts(base_settings(TTS_DEVICE="cpu"), self.ctx, found={}, voice_mode="external")
+        self.assertEqual(self.runs()[-1][-1], "TTSCPU")
+        self.ctx.backend = "rocm"           # no ROCm torch: an AMD machine's voice is on its CPU
+        lifecycle.ensure_tts(base_settings(), self.ctx, found={}, voice_mode="external")
+        self.assertEqual(self.runs()[-1][-1], "TTSCPU")
+
+    def test_default_roles_take_the_voice_once_it_is_a_container(self):
+        with mock.patch.object(lifecycle, "voice_state", return_value={"mode": "managed"}):
+            self.assertEqual(lifecycle.default_roles(), ("chat", "embed", "rerank"))
+        with mock.patch.object(lifecycle, "voice_state", return_value={"mode": "external", "container": "luna-tts"}):
+            self.assertEqual(lifecycle.default_roles(), ("chat", "embed", "rerank", "tts"))
+
+
 class Ready(unittest.TestCase):
     def clock(self):
         t = [0.0]

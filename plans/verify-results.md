@@ -44,3 +44,18 @@ The host build (`llama/install.sh`) tracks llama.cpp master (`git clone
 
 - Built: cpu image 861 MB (`localhost/luna-test-llama:cpu`).
 - `LABEL` from an `ARG` came back stale from buildah's cache, so labels are set with `podman build --label`.
+
+## TTS image (`services/tts`)
+
+| Check | Result |
+|---|---|
+| kokoro-reader | No tags upstream; pinned to commit `7c70135090f4cc228e0fc2d46900cd42d104a392` (2026-10-18). Its server reads `blends.json` beside itself, so blends like `luna` work. |
+| kokoro-reader and a key | **It takes none**: no auth, CORS `*`. Locally it's published on 127.0.0.1 only. For a remote server (P7), section 14 says to ask. |
+| Kokoro's Python | `kokoro` 0.9.4 `requires_python >=3.10,<3.13`; `misaki` 0.9.4 the same. Narrower than `install.sh`'s 3.10-3.13. |
+| Base | `python:3.12-slim` (3.12.15), index digest `sha256:cb33f7f771ecec2ef1225cf39b159591a040391bd73e4c01f00fdfc4c47611d2`. |
+| torch | 2.14.1. CPU from `whl/cpu`; `whl/cu126` (CUDA 12 drivers) and `whl/cu130` (CUDA 13) for NVIDIA. PyPI's own Linux wheel pulls CUDA 13. |
+| Pins in the image | `pip show`: kokoro 0.9.4, misaki 0.9.4, numpy 2.5.4, torch 2.14.1+cpu; spacy 3.8.16, en_core_web_sm 3.8.0. No nvidia or cuda packages in the CPU image. |
+| Size | CPU image **1.64 GB** (the old branch's nvidia/cuda-based image was 11.4 GB). |
+| spaCy model | misaki pip-installs `en_core_web_sm` on its first sentence unless it's there; it's now installed at build time, and TTS works with `--network none` once the Kokoro model is cached. |
+| SIGTERM | The server ignores it as PID 1 (a 10 s wait, then SIGKILL); `--init` stops it in 0.3 s. |
+| Speed (CPU, this machine) | First start ~18 s with the model cached; a short sentence takes ~1.9 s (`af_bella`), ~2.5 s (`luna` blend, first use). |

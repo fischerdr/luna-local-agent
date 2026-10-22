@@ -1,27 +1,29 @@
 """python -m services - Luna's backend in rootless Podman containers.
 
     python -m services setup          everything it needs, asking first
-    python -m services up [ROLE...]   start (or keep) chat, embed, rerank
+    python -m services setup tts      her voice in a container
+    python -m services up [ROLE...]   start (or keep) chat, embed, rerank (and tts)
     python -m services down [ROLE...] stop and remove them; models stay
     python -m services status         each one, and whether it answers
     python -m services logs ROLE      a container's log (-f follows it)
 
-Roles: chat, embed, rerank. Settings: llama/server.env (as for
+Roles: chat, embed, rerank, tts. Settings: llama/server.env (as for
 llama/start.sh), then services/services.env.
 """
 import argparse
 import os
 import sys
 
-from services import CONTAINER, LLAMA_ROLES, keys, lifecycle, settings
+from services import CONTAINER, ROLES, keys, lifecycle, settings
 
 
-def _roles(names, allowed):
-    """The roles asked for (all of them when none were), or exit."""
+def _roles(names, default, allowed=None):
+    """The roles asked for (the default ones when none were), or exit."""
+    allowed = allowed or default
     bad = [n for n in names if n not in allowed]
     if bad:
         sys.exit(f"Unknown role: {', '.join(bad)} (roles: {', '.join(allowed)})")
-    return tuple(names) or allowed
+    return tuple(names) or default
 
 
 def cmd_up(args):
@@ -43,7 +45,7 @@ def cmd_up(args):
             except EOFError:
                 sys.exit(1)
     token, _ = keys.token_source()
-    results = lifecycle.up(s, _roles(args.roles, LLAMA_ROLES), token)
+    results = lifecycle.up(s, _roles(args.roles, lifecycle.default_roles(), ROLES), token)
     for r in results:
         mark = {"kept": "✓", "started": "✓", "skipped": "·", "failed": "✗"}[r.state]
         print(f"  {mark} {r.role}: {r.state}" + (f" - {r.note}" if r.note else ""))
@@ -87,8 +89,10 @@ def cmd_logs(args):
 
 def cmd_setup(args):
     """The setup steps (services/setup.py)."""
-    from services.setup import Asker, setup
+    from services.setup import Asker, setup, setup_tts
 
+    if args.what == "tts":
+        return 0 if setup_tts(Asker(args.yes)) else 1
     return 0 if setup(Asker(args.yes), gpu=args.gpu) else 1
 
 
@@ -97,6 +101,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="python -m services", description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("setup", help="set everything up, asking before each step")
+    p.add_argument("what", nargs="?", choices=("tts",), help="tts: her voice only")
     p.add_argument("--yes", action="store_true", help="take every default without asking")
     p.add_argument("--gpu", default="auto", help="auto (default), cpu, cuda, cuda13, rocm or vulkan")
     p.set_defaults(func=cmd_setup)

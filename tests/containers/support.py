@@ -6,7 +6,8 @@
 Everything is luna-test-*: its own containers, secret and image, on ports
 18080-18082 and 18899, so your own containers, models and key are never
 touched. Teardown removes all of it except the luna-test-models volume,
-which keeps the tiny test models (models.env) between runs.
+and luna-test-tts-cache, which keep the tiny test models (models.env)
+and the voice model between runs.
 """
 import os
 import secrets
@@ -30,6 +31,8 @@ full = unittest.skipUnless(LIVE and FULL, "LUNA_CONTAINER_TESTS=full only")
 
 PORTS = {"chat": 18080, "embed": 18081, "rerank": 18082, "tts": 18899}
 LLAMA_IMAGE = "localhost/luna-test-llama:cpu"
+TTS_IMAGE = "localhost/luna-test-tts:cpu"
+TTS_CACHE = "luna-test-tts-cache"
 # The Dockerfile's default (cpu) base; services/images.py will own the pins.
 LLAMA_BASE_DIGEST = "sha256:8c74db29f1a2bef3f0a331b52c4d6214601dfceed4bee0b94cc48b3b23ff257d"
 MODELS = "luna-test-models"
@@ -70,6 +73,23 @@ def build_llama():
                "-t", LLAMA_IMAGE, os.path.join(ROOT, "services", "llama"))
         _built[LLAMA_IMAGE] = True
     return LLAMA_IMAGE
+
+
+def build_tts():
+    """The voice image from services/tts (cpu), built once per run."""
+    if TTS_IMAGE not in _built:
+        podman("build", "-q", "--label", "luna.image-version=test", "-t", TTS_IMAGE,
+               os.path.join(ROOT, "services", "tts"))
+        _built[TTS_IMAGE] = True
+    return TTS_IMAGE
+
+
+def start_tts(voice="af_bella"):
+    """The voice as luna-test-tts on 127.0.0.1:18899, its model cached."""
+    podman("run", "-d", "--replace", "--init", "--name", "luna-test-tts",
+           "-p", f"127.0.0.1:{PORTS['tts']}:8899", "-v", f"{TTS_CACHE}:/cache",
+           "-e", "KOKORO_DEVICE=cpu", "-e", f"KOKORO_VOICE={voice}", build_tts())
+    return "luna-test-tts"
 
 
 def make_key():

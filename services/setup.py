@@ -4,13 +4,14 @@ Asks before each step that touches the system, showing the exact
 command first - images, volumes, secrets, files. Run it again any time:
 it does only what's missing.
 """
+import json
 import os
 import re
 import shlex
 import subprocess
 import sys
 
-from services import (CONTAINER, KEY_SECRET, LLAMA_DIR, LLAMA_ROLES, TOKEN_SECRET, HERE,
+from services import (CONTAINER, KEY_SECRET, LLAMA_DIR, LLAMA_ROLES, ROOT, TOKEN_SECRET, HERE,
                       images, keys, lifecycle, settings)
 
 LOCAL_ENV = os.path.join(HERE, "services.local.env")
@@ -167,6 +168,7 @@ def setup(a, gpu="auto"):
         cmd = images.build_cmd(b)
         show(cmd)
         if a.ask(f"Build the {b} image (pulls upstream's llama.cpp, about 1-4 GB)?"):
+            sys.stdout.flush()
             if subprocess.call(cmd) != 0:
                 warn("the build failed - the lines above say why")
                 return False
@@ -189,6 +191,68 @@ def setup(a, gpu="auto"):
             warn(str(e))
 
     print("  Next: python -m services up")
+    return True
+
+
+def save_voice(url):
+    """Point install.json's voice at the container: launch.py then
+    never starts the host's kokoro-reader as well. Other keys stay."""
+    path = os.path.join(ROOT, "install.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            state = json.load(f) or {}
+    except (OSError, ValueError):
+        state = {}
+    state["voice"] = {"mode": "external", "url": url, "container": CONTAINER["tts"]}
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(state, f, indent=2)
+
+
+def setup_tts(a):
+    """Set up her voice in a container (setup tts). True when it can come up."""
+    print("Luna's voice in a container - setup")
+    problem = lifecycle.podman_problem()
+    if problem:
+        warn(problem)
+        print("  Without Podman, the installer sets her voice up on the host: ./installer/install.sh")
+        return False
+    s = settings.load()
+    backend, _ = images.image_for_host(s["LLAMA_BACKEND"])
+    device = lifecycle.tts_device(s, backend)
+    build = images.tts_backend(backend) if device == "cuda" else "cpu"
+    ok(f"voice on the {device}" + ("" if device == "cuda" else " - faster than real time"))
+
+    if images.find(build, kind="tts"):
+        ok(f"image {images.tag(build, 'tts')} is current")
+    else:
+        cmd = images.build_cmd(build, "tts")
+        show(cmd)
+        size = "about 1.6 GB" if build == "cpu" else "about 5 GB, CUDA's libraries included"
+        if not a.ask(f"Build the voice image ({size})?"):
+            return False
+        sys.stdout.flush()
+        if subprocess.call(cmd) != 0:
+            warn("the build failed - the lines above say why")
+            return False
+        ok(f"built {images.tag(build, 'tts')}")
+
+    if lifecycle.podman("volume", "exists", "luna-tts-cache").returncode:
+        show(["podman", "volume", "create", "luna-tts-cache"])
+        if a.ask("Create the luna-tts-cache volume (the voice model, about 330 MB, downloads into it once)?"):
+            lifecycle.podman("volume", "create", "luna-tts-cache", check=True)
+
+    v = lifecycle.voice_state()
+    url = "http://127.0.0.1:8899"
+    if v.get("container") != CONTAINER["tts"]:
+        was = v.get("mode") or "not set up"
+        if a.ask(f"Point install.json's voice at the container (it's {was} now), so ./start.sh "
+                 "never starts the host's kokoro-reader too?"):
+            save_voice(url)
+            ok(f"install.json: voice external, {url}")
+        else:
+            warn("install.json left as it is - up tts won't run while it says managed")
+    ok(f"voice: {lifecycle.config_voice()} (config.json)")
+    print("  Next: python -m services up tts")
     return True
 
 

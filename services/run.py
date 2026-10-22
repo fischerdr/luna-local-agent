@@ -38,10 +38,10 @@ def gpu_flags(backend, selinux, render):
     return flags
 
 
-def publish(host, host_port):
+def publish(host, host_port, inner=8080):
     """-p's value: HOST only, IPv6 in brackets."""
     host = f"[{host}]" if ":" in host else host
-    return f"{host}:{host_port}:8080"
+    return f"{host}:{host_port}:{inner}"
 
 
 def config_hash(argv, env_text, image_id, key_fp, token_fp):
@@ -94,3 +94,29 @@ def wants_gpu(role, s, backend):
     except ValueError:
         layers = 99
     return backend != "cpu" and layers > 0
+
+
+TTS_HEALTH = ("python -c \"import urllib.request; "
+              "urllib.request.urlopen('http://127.0.0.1:8899/health', timeout=3)\"")
+
+
+def tts_run_args(voice, *, image, image_id, device, env_file, env_text,
+                 selinux=False, cdi_dir=None):
+    """The podman run for the voice: kokoro-reader on 127.0.0.1:8899.
+
+    Always loopback, whatever HOST says: kokoro-reader takes no key. The
+    model lives in luna-tts-cache. --init, because the server (as PID 1)
+    wouldn't stop on SIGTERM. device is cpu or cuda."""
+    argv = ["podman"]
+    if cdi_dir and device == "cuda":
+        argv += ["--cdi-spec-dir", cdi_dir]
+    argv += ["run", "-d", "--replace", "--init", "--name", CONTAINER["tts"],
+             "--label", "luna.role=tts",
+             "-p", publish("127.0.0.1", port("tts", {}), inner=8899),
+             "-v", "luna-tts-cache:/cache",
+             "--env-file", env_file,
+             "--health-cmd", TTS_HEALTH, "--health-interval", "30s", "--health-start-period", "10m"]
+    if device == "cuda":
+        argv += gpu_flags("cuda", selinux, False)
+    h = config_hash(argv, env_text, image_id, voice, "")
+    return argv + ["--label", f"luna.config-hash={h}", image]

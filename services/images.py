@@ -27,6 +27,8 @@ import subprocess
 from services import HERE
 
 LLAMA_CONTEXT = os.path.join(HERE, "llama")
+TTS_CONTEXT = os.path.join(HERE, "tts")
+CONTEXT = {"llama": LLAMA_CONTEXT, "tts": TTS_CONTEXT}
 REPO = "ghcr.io/ggml-org/llama.cpp"
 
 # Upstream's images, pinned (multi-arch index digests, build b11804).
@@ -39,6 +41,15 @@ BASES = {
     "vulkan": ("server-vulkan", "sha256:a644fb651975d9dea49140302577a3b945993fd5efd3400bf89c7d525d03c103"),
 }
 NVIDIA = ("cuda", "cuda13")
+
+# The voice's base, and the torch build for each GPU it can use. ROCm
+# torch isn't offered: an AMD machine's voice runs on its CPU.
+PYTHON_DIGEST = "sha256:cb33f7f771ecec2ef1225cf39b159591a040391bd73e4c01f00fdfc4c47611d2"
+TORCH_INDEX = {
+    "cpu": "https://download.pytorch.org/whl/cpu",
+    "cuda": "https://download.pytorch.org/whl/cu126",
+    "cuda13": "https://download.pytorch.org/whl/cu130",
+}
 
 CDI_SYSTEM = "/etc/cdi/nvidia.yaml"
 CDI_USER = os.path.expanduser("~/.config/cdi/nvidia.yaml")
@@ -92,41 +103,52 @@ def image_for_host(override="auto", cuda=cuda_major, cdi=cdi_spec, exists=os.pat
     return "cpu", None
 
 
-def image_version():
+def tts_backend(backend):
+    """The voice's build for a machine's backend: CUDA on NVIDIA, else cpu."""
+    return backend if backend in NVIDIA else "cpu"
+
+
+def image_version(kind="llama"):
     """Changes whenever the image would: our build files, or the pins."""
-    h = hashlib.sha256(json.dumps(BASES, sort_keys=True).encode())
-    for name in sorted(os.listdir(LLAMA_CONTEXT)):
-        with open(os.path.join(LLAMA_CONTEXT, name), "rb") as f:
+    pins = BASES if kind == "llama" else {"python": PYTHON_DIGEST, "torch": TORCH_INDEX}
+    h = hashlib.sha256(json.dumps(pins, sort_keys=True).encode())
+    for name in sorted(os.listdir(CONTEXT[kind])):
+        with open(os.path.join(CONTEXT[kind], name), "rb") as f:
             h.update(name.encode() + b"\0" + f.read())
     return h.hexdigest()[:16]
 
 
-def labels(backend):
+def labels(backend, kind="llama"):
     """The labels a current image of ours carries."""
-    return {"luna.image-version": image_version(), "luna.base-digest": BASES[backend][1],
-            "luna.backend": backend}
+    base = BASES[backend][1] if kind == "llama" else PYTHON_DIGEST
+    return {"luna.kind": kind, "luna.image-version": image_version(kind),
+            "luna.base-digest": base, "luna.backend": backend}
 
 
-def tag(backend):
+def tag(backend, kind="llama"):
     """The local tag of our image for a backend (a name, not proof - see
     find). Not luna-llama: an older setup used that name, and a build here
     mustn't move its tag."""
-    return f"localhost/luna-services-llama:{backend}"
+    return f"localhost/luna-services-{kind}:{backend}"
 
 
-def build_cmd(backend):
+def build_cmd(backend, kind="llama"):
     """The podman build that makes our image for a backend."""
-    base, digest = BASES[backend]
-    cmd = ["podman", "build", "--build-arg", f"BACKEND={base}", "--build-arg", f"BASE_DIGEST={digest}"]
-    for k, v in labels(backend).items():
+    if kind == "llama":
+        base, digest = BASES[backend]
+        cmd = ["podman", "build", "--build-arg", f"BACKEND={base}", "--build-arg", f"BASE_DIGEST={digest}"]
+    else:
+        cmd = ["podman", "build", "--build-arg", f"PYTHON_DIGEST={PYTHON_DIGEST}",
+               "--build-arg", f"TORCH_INDEX={TORCH_INDEX[backend]}"]
+    for k, v in labels(backend, kind).items():
         cmd += ["--label", f"{k}={v}"]
-    return cmd + ["-t", tag(backend), LLAMA_CONTEXT]
+    return cmd + ["-t", tag(backend, kind), CONTEXT[kind]]
 
 
-def find(backend, images=None):
+def find(backend, images=None, kind="llama"):
     """The ID of a local image of ours for this backend, current by its
     labels - or None. A tag alone proves nothing."""
-    want = labels(backend)
+    want = labels(backend, kind)
     if images is None:
         out = subprocess.run(["podman", "images", "--format", "json"], capture_output=True, text=True).stdout
         images = json.loads(out or "[]")

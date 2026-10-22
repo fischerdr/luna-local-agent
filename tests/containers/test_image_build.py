@@ -4,6 +4,7 @@ plans/container-migration-plan-v2.md, 5.3.
 """
 import os
 import shutil
+import sys
 import tempfile
 import unittest
 
@@ -69,6 +70,47 @@ class LlamaImage(unittest.TestCase):
     def test_curl_is_there_for_healthchecks(self):
         out = podman("run", "--rm", "--entrypoint", "sh", self.image, "-c", "command -v curl")
         self.assertEqual(out.stdout.strip(), "/usr/bin/curl")
+
+
+@live
+class TtsImage(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.image = support.build_tts()
+
+    def run_in(self, script):
+        return podman("run", "--rm", "--network", "none", "--entrypoint", "sh", self.image, "-c", script).stdout
+
+    def test_every_pin_survived(self):
+        out = self.run_in("pip show kokoro misaki numpy torch | grep -E '^(Name|Version)'")
+        for pin in ("kokoro\nVersion: 0.9.4", "misaki\nVersion: 0.9.4", "numpy\nVersion: 2.5.4",
+                    "torch\nVersion: 2.14.1+cpu"):
+            self.assertIn(pin.replace("\n", "\n"), out.replace("Name: ", ""))
+
+    def test_cpu_image_has_no_cuda(self):
+        out = self.run_in("pip list 2>/dev/null")
+        self.assertNotRegex(out.lower(), r"nvidia|cuda")
+
+    def test_kokoro_reader_at_its_pinned_commit_without_git(self):
+        out = self.run_in("ls /app/server; command -v git || echo no-git; ls -a /app")
+        self.assertIn("kokoro_server.py", out)
+        self.assertIn("blends.json", out)
+        self.assertIn("no-git", out)
+        self.assertNotIn(".git\n", out)
+        with open(os.path.join(support.ROOT, "services", "tts", "Dockerfile")) as f:
+            self.assertRegex(f.read(), r"ARG KOKORO_REF=[0-9a-f]{40}")
+
+    def test_spacy_model_is_in_the_image(self):
+        self.assertIn("en_core_web_sm", self.run_in("pip list 2>/dev/null"))
+
+    def test_context_is_empty(self):
+        with open(os.path.join(support.ROOT, "services", "tts", ".containerignore")) as f:
+            self.assertIn("*", f.read().split())
+
+    def test_size_is_recorded(self):
+        size = int(podman("image", "inspect", "-f", "{{.Size}}", self.image).stdout)
+        print(f"\n  voice image (cpu): {size / 1e9:.2f} GB", file=sys.stderr)
+        self.assertLess(size, 3e9)          # the old nvidia/cuda-based one was 11.4 GB
 
 
 if __name__ == "__main__":

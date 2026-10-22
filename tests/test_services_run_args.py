@@ -153,5 +153,37 @@ class Hash(unittest.TestCase):
                 self.assertNotEqual(self.label(argv(**change)), same)
 
 
+class Voice(unittest.TestCase):
+    def tts(self, **kw):
+        args = dict(image="TTS", image_id="sha256:t", device="cpu", env_file="/run/user/1/x/tts.env",
+                    env_text="KOKORO_DEVICE=cpu\nKOKORO_VOICE=af_bella\n")
+        args.update(kw)
+        return run.tts_run_args("af_bella", **args)
+
+    def test_loopback_on_8899_always(self):
+        a = self.tts()
+        self.assertEqual(a[a.index("-p") + 1], "127.0.0.1:8899:8899")
+        self.assertNotIn("--network", " ".join(a))
+
+    def test_init_so_it_stops(self):
+        self.assertIn("--init", self.tts())
+
+    def test_model_cache_volume(self):
+        self.assertIn("luna-tts-cache:/cache", self.tts())
+
+    def test_cuda_only_by_cdi(self):
+        self.assertNotIn("nvidia.com/gpu=all", self.tts())
+        a = self.tts(device="cuda", selinux=True)
+        self.assertIn("nvidia.com/gpu=all", a)
+        self.assertIn("label=disable", a)
+        self.assertNotIn("--gpus", a)
+
+    def test_hash_follows_the_voice_and_device(self):
+        same = self.tts()[-2]
+        self.assertEqual(self.tts()[-2], same)
+        self.assertNotEqual(self.tts(env_text="KOKORO_DEVICE=cpu\nKOKORO_VOICE=luna\n")[-2], same)
+        self.assertNotEqual(self.tts(device="cuda")[-2], same)
+
+
 if __name__ == "__main__":
     unittest.main()
