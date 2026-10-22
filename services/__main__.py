@@ -56,11 +56,16 @@ def cmd_up(args):
             url = f"http://127.0.0.1:{settings.port(role, s)}"
             print(f"  waiting for {role} on {url}", end="", flush=True)
             try:
-                ready = lifecycle.wait_ready(url, timeout)
+                ready = lifecycle.wait_ready(url, timeout, alive=lifecycle.running(role))
             except KeyboardInterrupt:
                 print(" - not waiting (it carries on loading)")
                 break
-            print(" ready." if ready else f" still not ready - python -m services logs {role}")
+            if ready:
+                print(" ready.")
+                continue
+            print(" not ready." if lifecycle.running(role)() else " it stopped.")
+            hint = lifecycle.trouble(role)
+            print(f"    {hint}" if hint else f"    python -m services logs {role} says why")
     return 1 if any(r.state == "failed" for r in results) else 0
 
 

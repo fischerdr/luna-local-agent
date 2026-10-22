@@ -59,3 +59,13 @@ The host build (`llama/install.sh`) tracks llama.cpp master (`git clone
 | spaCy model | misaki pip-installs `en_core_web_sm` on its first sentence unless it's there; it's now installed at build time, and TTS works with `--network none` once the Kokoro model is cached. |
 | SIGTERM | The server ignores it as PID 1 (a 10 s wait, then SIGKILL); `--init` stops it in 0.3 s. |
 | Speed (CPU, this machine) | First start ~18 s with the model cached; a short sentence takes ~1.9 s (`af_bella`), ~2.5 s (`luna` blend, first use). |
+
+## Hugging Face token (P4)
+
+| Check | Result |
+|---|---|
+| Gated model, no token | llama-server logs `GET failed (401): Access to model <repo> is restricted ... Please log in.` and exits. `python -m services up` reads that and prints the fix (accept the terms, `huggingface-cli login`, then setup). Tested with `google/gemma-3-1b-it-qat-q4_0-gguf` (`gated: manual`). |
+| Token reaches llama-server | `HF_TOKEN` is in llama-server's own environment (`/proc/1/environ`), read from `/run/secrets/hf_token` by the entrypoint. |
+| Token and key elsewhere | Not in `podman inspect`, the logs, or llama-server's argv. |
+| Empty token file | Not exported (the compose placeholder case). **Podman refuses an empty secret** (`secret create` exits 125), so the local path only adds `--secret luna_hf_token` when there is a token, and compose's empty placeholder needs checking in P7. |
+| Gated model with your token | Opt-in: `LUNA_TEST_GATED=<repo>` (not run here). |

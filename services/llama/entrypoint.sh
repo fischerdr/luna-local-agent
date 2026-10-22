@@ -52,7 +52,10 @@ else
     echo "$ROLE: no model - python -m services up sets LUNA_HF or LUNA_MODEL." >&2; exit 1
 fi
 
-# Inside, every role listens on 8080; the host port is Podman's -p.
+# Inside, every role listens on 8080; the host port is Podman's -p. The
+# image's own LLAMA_ARG_HOST/PORT would only earn a warning beside them.
+unset LLAMA_ARG_HOST LLAMA_ARG_PORT
+
 args=(
     "${model[@]}"
     --host 0.0.0.0 --port 8080

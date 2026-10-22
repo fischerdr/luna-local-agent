@@ -139,9 +139,10 @@ def env_dir():
     return path
 
 
-def wait_ready(url, timeout, get=requests.get, clock=time.monotonic, pause=time.sleep):
+def wait_ready(url, timeout, get=requests.get, clock=time.monotonic, pause=time.sleep, alive=None):
     """Poll url/health until it says ok (200; 503 means still loading).
-    True when ready, False when the time ran out."""
+    True when ready; False when the time ran out, or alive() says the
+    container has stopped (no use waiting for it)."""
     end = clock() + timeout
     while True:
         try:
@@ -149,9 +150,42 @@ def wait_ready(url, timeout, get=requests.get, clock=time.monotonic, pause=time.
                 return True
         except requests.RequestException:
             pass
-        if clock() >= end:
+        if clock() >= end or (alive and not alive()):
             return False
         pause(1)
+
+
+def running(role):
+    """A callable: is the role's container still running?"""
+    def alive():
+        state = podman("inspect", "-f", "{{.State.Running}}", CONTAINER[role]).stdout.strip()
+        return state == "true"
+    return alive
+
+
+# What a container's log says when it can't start, and the fix in words.
+_TROUBLE = (
+    (re.compile(r"GET failed \((?:401|403)\).*?(?:Access to model (\S+) is restricted|gated)", re.I),
+     "{repo} is gated on Hugging Face: accept its terms on huggingface.co, log in "
+     "(huggingface-cli login, or set HF_TOKEN), then python -m services setup stores the token"),
+    (re.compile(r"GET failed \(404\)", re.I),
+     "Hugging Face has no such model or quant - check the *_HF setting"),
+    (re.compile(r"out of memory|cudaMalloc failed|failed to allocate", re.I),
+     "it ran out of memory - fewer GPU layers (NGL), a smaller CTX, or EMBED_NGL/RERANK_NGL=0"),
+)
+
+
+def trouble(role, log=None):
+    """A line saying why a role didn't come up, read from its log - or None."""
+    if log is None:
+        r = podman("logs", "--tail", "80", CONTAINER[role])
+        log = r.stdout + r.stderr
+    for pattern, hint in _TROUBLE:
+        m = pattern.search(log)
+        if m:
+            repo = (m.group(1) if m.groups() and m.group(1) else "the model").rstrip(".")
+            return hint.format(repo=repo)
+    return None
 
 
 # --- one role ---------------------------------------------------------------

@@ -183,6 +183,33 @@ class Ready(unittest.TestCase):
         self.assertFalse(lifecycle.wait_ready("http://127.0.0.1:8080", 10, get=get, clock=now, pause=pause))
         self.assertEqual(now(), 10)
 
+    def test_stops_waiting_when_the_container_stopped(self):
+        now, pause = self.clock()
+        get = mock.Mock(side_effect=requests.ConnectionError())
+        self.assertFalse(lifecycle.wait_ready("http://127.0.0.1:8080", 600, get=get, clock=now, pause=pause,
+                                              alive=lambda: now() < 3))
+        self.assertEqual(now(), 3)
+
+
+class Trouble(unittest.TestCase):
+    def test_gated_model_says_how_to_log_in(self):
+        log = ("0.00.137.429 E get_repo_commit: error: GET failed (401): Access to model "
+               "google/gemma-3-1b-it-qat-q4_0-gguf is restricted. You must have access to it and be "
+               "authenticated to access it. Please log in.\n")
+        hint = lifecycle.trouble("chat", log=log)
+        self.assertIn("google/gemma-3-1b-it-qat-q4_0-gguf is gated", hint)
+        self.assertIn("huggingface-cli login", hint)
+        self.assertIn("setup", hint)
+
+    def test_no_such_model(self):
+        self.assertIn("*_HF", lifecycle.trouble("embed", log="E get_repo_commit: error: GET failed (404): x"))
+
+    def test_out_of_memory(self):
+        self.assertIn("NGL", lifecycle.trouble("chat", log="ggml_backend_cuda_buffer: cudaMalloc failed: out of memory"))
+
+    def test_nothing_known(self):
+        self.assertIsNone(lifecycle.trouble("chat", log="srv load_model: loading model\n"))
+
 
 class Down(unittest.TestCase):
     def test_stops_only_ours(self):
