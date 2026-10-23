@@ -15,6 +15,7 @@ ok()   { echo "  ✓ $*"; }
 no()   { echo "  ✗ $*"; bad=$((bad + 1)); }
 # check LABEL COMMAND...: ✓ when the command succeeds
 check() { local label=$1; shift; if "$@"; then ok "$label"; else no "$label"; fi; }
+quiet() { "$@" >/dev/null 2>&1; }          # the command's own output only; check still says ✓/✗
 key_private() { [ -s llama/.api_key ] && [ "$(stat -c %a llama/.api_key)" = 600 ]; }
 
 # Luna's own Python, as the installer recorded it.
@@ -41,7 +42,7 @@ else
 fi
 
 echo "Checks"
-check "./start.sh --check" ./start.sh --check >/dev/null 2>&1
+check "./start.sh --check" quiet ./start.sh --check
 health=$("$PY" installer/install.py --check 2>&1)
 check "installer --check" test "$(grep -c "✗" <<< "$health")" = 0
 
