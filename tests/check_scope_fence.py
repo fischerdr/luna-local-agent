@@ -24,6 +24,7 @@ MODIFIED = {
     "installer/install.py", "launch.py", "config.example.json", ".gitignore",
     "embedmem.py",          # P9's default-off on-demand hook, approved 2026-10-22
     "installer/install.sh",  # a newer Python falls back to containers, approved 2026-10-22
+    "tools/askpass.sh",      # mode only (executable): the user's own commit 83cf99d
     "README.md", "docs/README.md", "docs/_Sidebar.md", "docs/install.md",
     "docs/configuration.md", "docs/development.md", "docs/knowledge.md",
     "docs/vision.md", "docs/reasoning.md", "docs/sysadmin.md",

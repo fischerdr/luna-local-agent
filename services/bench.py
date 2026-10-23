@@ -88,7 +88,12 @@ def recommend(total, used, rerank_need, rerank_cpu, voice_need=0, embed_need=0):
     return out, why
 
 
-VOICE_MIB = 1000        # Kokoro on CUDA: torch's context, the model and its working memory
+# Measured on an RTX 3070 (2026-10-22, nvidia-smi per process): Kokoro on
+# CUDA took 1124 MiB; a 4B Q6_K chat at 8k context took 4840 (its file, its
+# context, and llama.cpp's compute buffers); the 0.6B Q8 reranker 882.
+VOICE_MIB = 1150        # Kokoro on CUDA: torch's context, the model and its working memory
+CHAT_OVERHEAD = 1150    # beyond the file and its context (ctx / 20): compute buffers and the rest
+SIDE_OVERHEAD = 300     # an embedder's or reranker's, beyond its file
 
 
 def model_mib(m, s):
@@ -188,13 +193,13 @@ def bench(a, out=print):
     backend, _ = images.image_for_host(s["LLAMA_BACKEND"])
     voice_gpu = lifecycle.voice_state().get("container") == CONTAINER["tts"] and \
         lifecycle.tts_device(s, backend) == "cuda"
-    need = model_mib(rerank, s) + 400 if rerank else 0
-    embed_need = model_mib(embed, s) + 400 if embed else 0
+    need = model_mib(rerank, s) + SIDE_OVERHEAD if rerank else 0
+    embed_need = model_mib(embed, s) + SIDE_OVERHEAD if embed else 0
     if mem:
         if not running["chat"]:
             try:
                 chat, _ = settings.resolve("chat", s)
-                used += model_mib(chat, s) + int(s["CTX"] or 16384) // 20 + 512
+                used += model_mib(chat, s) + int(s["CTX"] or 16384) // 20 + CHAT_OVERHEAD
                 out(f"  (chat isn't running: {used} MiB counted for it, from its size and CTX)")
             except settings.SettingsError:
                 pass

@@ -62,6 +62,24 @@ class Recommend(unittest.TestCase):
         self.assertNotIn("TTS_DEVICE", bench.recommend(8192, 6900, 1000, 0.5, voice_need=0)[0])
 
 
+class Measured(unittest.TestCase):
+    """The numbers from the from-zero run on an RTX 3070 (8 GB)."""
+
+    def test_4b_and_the_voice_leave_the_reranker_on_the_cpu(self):
+        model = 3464056128 // bench.MIB                          # Huihui 4B Q6_K
+        chat = model + 8192 // 20 + bench.CHAT_OVERHEAD
+        self.assertGreaterEqual(chat, 4840)                     # at least what it took
+        reranker = 609 + bench.SIDE_OVERHEAD
+        before = 690                     # the desktop and the driver's own, before any of Luna's
+        place, why = bench.recommend(8192, before + chat, reranker, 0.6, bench.VOICE_MIB,
+                                     609 + bench.SIDE_OVERHEAD)
+        self.assertNotIn("TTS_DEVICE", place)                    # the voice keeps the GPU
+        self.assertEqual((place["RERANK_NGL"], place["EMBED_NGL"]), (0, 0))
+        self.assertGreaterEqual(bench.VOICE_MIB, 1124)
+        in_use = before + chat + bench.VOICE_MIB
+        self.assertLessEqual(in_use, 8192 * 0.9)
+
+
 class ModelSize(unittest.TestCase):
     def test_not_downloaded_yet_counts_its_download(self):
         from services import settings

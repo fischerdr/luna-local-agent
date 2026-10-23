@@ -56,9 +56,9 @@ class Gpu(unittest.TestCase):
         mem = bench.vram()
         self.assertIsNotNone(mem)
         total, used = mem
-        (embed, rerank, switch), why = bench.recommend(total, used, 1000, 0.8)
-        self.assertEqual(embed, 0)
-        self.assertIn(rerank, (0, 99))
+        place, why = bench.recommend(total, used, 1000, 0.8)
+        self.assertEqual(place["EMBED_NGL"], 0)
+        self.assertIn(place["RERANK_NGL"], (0, 99))
         self.assertTrue(why)
 
 
