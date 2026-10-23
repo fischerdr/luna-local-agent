@@ -1497,7 +1497,6 @@ def handle_input(text):
 
     if text == "/camera" or text.startswith("/camera "):
         import camera
-        import config
         import tools
 
         word = text[len("/camera"):].strip().lower()
