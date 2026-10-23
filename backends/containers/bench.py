@@ -197,7 +197,9 @@ def bench(a, out=print):
 
     try:
         embed, _ = settings.resolve("embed", s)
-        rerank, why = settings.resolve("rerank", s)
+        # A reranker that's off (bench may have turned it off) is weighed
+        # again as if it were on, so it stays off, or comes back when it fits.
+        rerank, why = settings.resolve("rerank", dict(s, RERANK="auto") if s["RERANK"] == "off" else s)
     except settings.SettingsError as e:
         out(f"  {e}")
         return False

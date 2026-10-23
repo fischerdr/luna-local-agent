@@ -1,7 +1,7 @@
 """Where the side models go (bench.py): GPU, CPU or off, from a
 pretended GPU and pretended timings.
 
-    python -m unittest discover tests        (from the repo folder)
+    python -m unittest discover -s backends/containers/tests -t .
 """
 import os
 import sys
@@ -96,6 +96,47 @@ class Measured(unittest.TestCase):
         self.assertGreaterEqual(reranker, 1124)                 # and the reranker
         in_use = before + chat + bench.VOICE_MIB
         self.assertLessEqual(in_use, 8192 * 0.9)
+
+
+class Rerun(unittest.TestCase):
+    """bench() run again on a machine where it already turned the reranker
+    off: it weighs the reranker again instead of reading "off" as "nothing
+    to place" and writing RERANK=auto back."""
+
+    def run_bench(self, rerank_cpu, total_used=(8192, 5400)):
+        from backends.containers import settings
+
+        s = dict(settings.DEFAULTS, RERANK="off", RERANK_NGL="0", EMBED_NGL="0", LLAMA_BACKEND="auto",
+                 CTX="8192", TTS_DEVICE="auto")
+        model = settings.Model(hf="ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF")
+        written = {}
+
+        def resolve(role, given):
+            if role == "rerank" and given["RERANK"] == "off":
+                return None, "off (RERANK=off in llama/server.env or server.local.env)"
+            return model, ""
+
+        asker = mock.Mock(ask=mock.Mock(return_value=True))
+        with mock.patch.object(bench.settings, "load", return_value=s), \
+             mock.patch.object(bench.settings, "resolve", side_effect=resolve), \
+             mock.patch.object(bench.keys, "read_key", return_value="k"), \
+             mock.patch.object(bench.keys, "sync"), \
+             mock.patch.object(bench.keys, "token_source", return_value=(None, "")), \
+             mock.patch.object(bench, "cpu_timing", side_effect=lambda role, *a: rerank_cpu if role == "rerank" else 0.03), \
+             mock.patch.object(bench, "vram", return_value=total_used), \
+             mock.patch.object(bench, "model_mib", return_value=609), \
+             mock.patch.object(bench.lifecycle, "containers", return_value={}), \
+             mock.patch.object(bench.lifecycle, "voice_state", return_value={}), \
+             mock.patch.object(bench.images, "image_for_host", return_value=("cuda13", None)), \
+             mock.patch("backends.containers.setup.set_env", side_effect=lambda path, k, v: written.update({k: v})):
+            bench.bench(asker, out=lambda *_: None)
+        return written
+
+    def test_still_too_slow_stays_off(self):
+        self.assertEqual(self.run_bench(rerank_cpu=5.0)["RERANK"], "off")
+
+    def test_comes_back_when_quick_enough(self):
+        self.assertEqual(self.run_bench(rerank_cpu=0.5)["RERANK"], "auto")
 
 
 class ModelSize(unittest.TestCase):
