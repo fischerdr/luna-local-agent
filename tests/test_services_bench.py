@@ -70,12 +70,13 @@ class Measured(unittest.TestCase):
         chat = model + 8192 // 20 + bench.CHAT_OVERHEAD
         self.assertGreaterEqual(chat, 4840)                     # at least what it took
         reranker = 609 + bench.SIDE_OVERHEAD
-        before = 690                     # the desktop and the driver's own, before any of Luna's
+        before = 550                     # the desktop and the driver's own, before any of Luna's
         place, why = bench.recommend(8192, before + chat, reranker, 0.6, bench.VOICE_MIB,
                                      609 + bench.SIDE_OVERHEAD)
         self.assertNotIn("TTS_DEVICE", place)                    # the voice keeps the GPU
         self.assertEqual((place["RERANK_NGL"], place["EMBED_NGL"]), (0, 0))
-        self.assertGreaterEqual(bench.VOICE_MIB, 1124)
+        self.assertGreaterEqual(bench.VOICE_MIB, 882)          # what it took
+        self.assertGreaterEqual(reranker, 1124)                 # and the reranker
         in_use = before + chat + bench.VOICE_MIB
         self.assertLessEqual(in_use, 8192 * 0.9)
 

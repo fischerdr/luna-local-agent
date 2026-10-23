@@ -88,12 +88,13 @@ def recommend(total, used, rerank_need, rerank_cpu, voice_need=0, embed_need=0):
     return out, why
 
 
-# Measured on an RTX 3070 (2026-10-22, nvidia-smi per process): Kokoro on
-# CUDA took 1124 MiB; a 4B Q6_K chat at 8k context took 4840 (its file, its
-# context, and llama.cpp's compute buffers); the 0.6B Q8 reranker 882.
-VOICE_MIB = 1150        # Kokoro on CUDA: torch's context, the model and its working memory
+# Measured on an RTX 3070 (2026-10-22/23, nvidia-smi per process, matched
+# to containers by cgroup): a 4B Q6_K chat at 8k context took 4840 MiB (its
+# file, its context, and llama.cpp's compute buffers), Kokoro on CUDA 882,
+# the 0.6B Q8 reranker at 2k context 1124.
+VOICE_MIB = 950         # Kokoro on CUDA: torch's context, the model and its working memory
 CHAT_OVERHEAD = 1150    # beyond the file and its context (ctx / 20): compute buffers and the rest
-SIDE_OVERHEAD = 300     # an embedder's or reranker's, beyond its file
+SIDE_OVERHEAD = 550     # an embedder's or reranker's, beyond its file
 
 
 def model_mib(m, s):
