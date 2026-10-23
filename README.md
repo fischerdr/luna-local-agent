@@ -28,7 +28,7 @@ git clone https://github.com/fswolf/luna-local-agent.git ~/ai-voice
 Powered by:
 
 - [Faster-Whisper](https://github.com/SYSTRAN/faster-whisper): speech to text
-- LM Studio or llama.cpp: the local model, with tool calling, picked automatically
+- LM Studio or llama.cpp: the local model. Any model with tool calling should work; the installer picks one for your card ([models](docs/models.md))
   (built here, or in containers: [readme-containers.md](readme-containers.md))
 - [kokoro-reader](https://github.com/fswolf/kokoro-reader): Kokoro TTS over local HTTP
 - MCP: OBS, Home Assistant, ComfyUI and the rest of the MCP ecosystem as her tools
@@ -39,6 +39,7 @@ What she does:
 - **Sees:** your screen, and your webcam when you switch it on
 - **Notices you:** with the webcam watching, she says hi when you come back, looks at you instead of the screen, and keeps quiet in an empty room ([details](docs/vision.md#presence-noticing-youre-there))
 - **Knows who's talking:** tells the people in your house apart by voice or face, uses their name and pronouns, and keeps each person's memories to themselves ([details](docs/people.md))
+- **Talk from another room:** an old phone or tablet becomes a relay station, paired by QR code, nothing to install. Dedicated voice devices (ESPHome satellites) are experimental ([details](docs/stations.md))
 - **Reminders and real alarms:** she wakes you up, and nags until you're up
 - **Email:** checks, reads and searches your inbox; sends only with your OK ([details](docs/email.md))
 - **Files and commands:** writes and edits files and runs commands, every one shown and approved first, with read/write/execute permissions you set in the tools pane
@@ -49,6 +50,7 @@ What she does:
 - **Her reasoning, kept:** the model's scratchpad per turn, with a browser viewer for reading it back
 - **See inside her:** token-by-token confidence, automatic flags for guesses and slips, `introspect` and `self_status` tools she can use on herself, and a live monitor
 - **An animated portrait:** Live2D or VRM, lip-synced, blinking, gestures, blushes and tears; click her and she reacts by mood; bust or full body ([details](docs/portrait.md#portrait))
+- **Light strips:** the LEDs on her robot model glow in her mood's colour, breathe, pulse with her voice and sweep while she thinks; chest and groin stay dark on a tame stream ([details](docs/portrait.md#light-strips))
 - **On a hologram fan:** live over WiFi on a Holoscope fan (P56, PD42), or on any HDMI fan as a screen; she floats in the air ([details](docs/fans.md))
 - **Learns from herself:** daily lessons from her own mistakes, notes on every conversation, fact cleanup, saying so when she's unsure ([details](docs/learning.md#learning-from-herself))
 - **Streams with you:** answers pomf.tv, Twitch, YouTube and IRC chat out loud ([details](docs/chat.md))
@@ -173,7 +175,11 @@ luna            # or ./start.sh, or luna.cmd on Windows
 ```
 
 The installer looks at your graphics card and offers the biggest model
-that fits (Qwen 3.5, from 4B up to 27B). The first time she starts, she
+that fits (Qwen 3.5, from 4B up to 27B, uncensored unless you pick the
+standard release). That's my pick, not a requirement: any model with
+tool calling on LM Studio or llama.cpp should work, and
+[docs/models.md](docs/models.md) says what's been tested and how to use
+your own. The first time she starts, she
 asks what to call you and what you mostly want her for. After that,
 `/settings` has everything, and you can just ask her how things work.
 
@@ -187,6 +193,7 @@ On Linux with Podman, `./installer/install.sh --backend container --voice contai
 
 - [Install](docs/install.md): the installer, the model picked for your GPU, LM Studio or llama.cpp, the voice server, first run
 - [Containers](docs/containers.md): her model servers and voice in Podman containers, or on a GPU server on your network
+- [Models](docs/models.md): which models work, what's been tested, graphics memory, quants, context, using your own
 - [Configuration](docs/configuration.md): the settings page and presets, config.json, changing settings live, logging
 - [Controls and voice](docs/controls.md): keys, voice modes, speech detection, barge-in, wake word
 - [Tool calling](docs/tools.md): every tool, her own manual, turning them off, MCP servers
@@ -195,6 +202,7 @@ On Linux with Podman, `./installer/install.sh --backend container --voice contai
 - [Email](docs/email.md): checking, reading and searching your inbox, sending with your OK
 - [Vision](docs/vision.md): looking at your screen, the webcam, noticing you're there
 - [People in the house](docs/people.md): she knows who's talking, by voice or face
+- [Relay stations](docs/stations.md): talk to her from another room on an old phone or tablet
 - [Reminders and alarms](docs/reminders.md)
 - [Knowledge](docs/knowledge.md): your notes, manuals and PDFs as something she can look things up in
 - [Memory](docs/memory.md): facts, recall by meaning, the memory manager, conversation history

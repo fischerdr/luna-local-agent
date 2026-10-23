@@ -37,6 +37,37 @@ class Pick(unittest.TestCase):
             self.assertIn("@", lms)
             self.assertGreaterEqual(ctx, 8192)
 
+    def test_uncensored_is_the_default_and_matches_the_tiers(self):
+        for m in install.MODELS:
+            u = install.variant(m)
+            self.assertIn("uncensored", u[1])
+            self.assertIn("abliterated", u[3])
+            self.assertEqual((u[0], u[6], u[7]), (m[0], m[6], m[7]))          # same size tier, memory, context
+            self.assertTrue(u[3].endswith(".gguf") and u[2].count("/") == 1)
+            self.assertEqual(bool(u[5]), bool(m[5]), m[0])                     # eyes where the standard has them
+            self.assertTrue(abs(u[4] - m[4]) < 2.5, m[0])                       # about the same download
+            self.assertLessEqual(u[4] + (1.0 if u[5] else 0) + 1.0, m[6] or 99, m[0])
+            self.assertTrue(u[8].startswith(u[2] + "@"))
+            self.assertIs(install.variant(m, uncensored=False), m)
+
+    def test_an_older_install_keeps_its_model(self):
+        # set up before the uncensored choice existed: a model, no flavour
+        tmp = tempfile.mkdtemp()
+        try:
+            os.makedirs(os.path.join(tmp, "llama", "models"))
+            m = install._model_by_key("9b")
+            open(os.path.join(tmp, "llama", "models", m[3]), "w").close()      # Qwen's own file is there
+            state = {"model": "9b", "backend": "llama"}
+            args = mock.Mock(model="auto", standard=False, yes=True)
+            with mock.patch.object(install, "ROOT", tmp), mock.patch.object(install, "ARGS", args), \
+                    mock.patch.object(install, "download") as download, \
+                    mock.patch.object(install, "detect_vram", return_value=(16.0, "test")):
+                install.model(state)
+            download.assert_not_called()
+            self.assertEqual(state["flavour"], "standard")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def test_local_env_is_written_for_start_sh(self):
         tmp = tempfile.mkdtemp()
         try:

@@ -190,6 +190,9 @@ def _show(path, value, kind):
         return _HIDDEN if value else "not set"
     if value is None:
         return "-"
+    if kind == "dict":
+        # a nested block (MCP servers, satellites) can hold logins: only how many
+        return f"{{{len(value)} entries}}" if isinstance(value, (dict, list)) and value else "{}"
     if isinstance(value, bool):
         return "on" if value else "off"
     if isinstance(value, list):
@@ -381,10 +384,27 @@ def _after(path, value):
             import livefeed
 
             livefeed.emit("holo", on=bool(value))
+        elif path.startswith("portrait.lights."):
+            import livefeed
+
+            livefeed.lights_changed()
         elif path == "portrait.frame":
             import livefeed
 
             livefeed.emit("frame", frame=value)
+        elif path == "station.enabled":
+            import station
+
+            if value:
+                ok, said = station.start()
+                add_message("system", f"Relay stations: {said}" if ok else f"Relay stations didn't start: {said}")
+            else:
+                station.stop()
+                add_message("system", "Relay stations: off")
+        elif path == "portrait.background":
+            import livefeed
+
+            livefeed.emit("background", value=value)
         elif path == "portrait.model":
             import livefeed
 

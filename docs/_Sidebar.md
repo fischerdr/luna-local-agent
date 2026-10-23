@@ -2,6 +2,7 @@
 
 - [Install](install.md)
 - [Containers](containers.md)
+- [Models](models.md)
 - [Configuration](configuration.md)
 - [Controls and voice](controls.md)
 - [Tool calling](tools.md)
@@ -10,6 +11,7 @@
 - [Email](email.md)
 - [Vision](vision.md)
 - [People in the house](people.md)
+- [Relay stations](stations.md)
 - [Reminders and alarms](reminders.md)
 - [Knowledge](knowledge.md)
 - [Memory](memory.md)

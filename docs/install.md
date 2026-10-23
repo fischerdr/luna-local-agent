@@ -37,9 +37,12 @@ system:
    Or llama.cpp in Podman containers, with nothing built here
    (`--backend container`), or on a GPU server on your network
    (`--remote <address>`). See [Containers](containers.md).
-6. **Her model, picked for your machine.** It reads how much graphics
-   memory you have and offers the biggest model that fits, with room for
-   her context and her eyes:
+6. **Her model, picked for your machine.** These are the models I run
+   and test her on, not the only ones she works with: any model with tool
+   calling on llama.cpp or LM Studio should do (see [Models](models.md)
+   for what's tested, quants, context and using your own). The installer
+   reads how much graphics memory you have and offers the biggest one that
+   fits, with room for her context and her eyes:
 
    | Graphics memory | Model | Download |
    |---|---|---|
@@ -56,6 +59,14 @@ system:
    into `llama/models` and points `llama/server.local.env` at it; with
    LM Studio it fetches it through LM Studio's own `lms` command, or
    tells you what to search for. All Apache-2.0, with tool calling.
+
+   **Uncensored by default.** It then asks uncensored or standard, with
+   uncensored first: the same Qwen3.5 sizes with the refusals taken out
+   (huihui-ai's abliterated versions, quantised by mradermacher, eyes
+   included). That's what most people run a companion on. Standard is
+   Qwen's own release, which turns down some requests; `--standard`
+   picks it without asking. The download sizes are the same as above,
+   give or take a few hundred MB.
 7. **Extras, pick any:** wake word, MCP, portrait tools, Live2D runtime,
    embedding model, the pomf chat plugin.
 8. **Launchers.** A `luna` command and an app-launcher entry on Linux,
@@ -114,7 +125,8 @@ default, and `--check` only runs the health check. Other options:
 `--backend lmstudio|llama|skip`,
 `--voice install|url:http://host:port|skip`,
 `--gpu auto|cpu|cuda|rocm`, `--extras wakeword,mcp,portrait,...`,
-`--model auto|skip|4b|9b-q4|9b|27b...`.
+`--model auto|skip|4b|9b-q4|9b|27b...`, `--standard` (Qwen's own
+release instead of the uncensored one).
 For containers and another machine there's also `--backend container|remote`,
 `--remote ADDR` and `--voice container`
 ([how they go together](#containers-and-a-remote-server)).
@@ -176,7 +188,7 @@ server, and stays text-only without it.
 # Running LM Studio
 
 1. Install LM Studio
-2. Download a model
+2. Download a model with tool calling ([which ones](models.md))
 3. Start the Local Server
 4. Verify it is running on:
 

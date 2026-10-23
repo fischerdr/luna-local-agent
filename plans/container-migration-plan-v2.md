@@ -55,9 +55,11 @@ exactly as they do on `main`.
 git switch -c feat/containers 6d1ef9f
 ```
 
-- This repo isn't ours. Never commit to or push `main`, and don't pull: the
-  base stays at `6d1ef9f`. All work, this brief included, lives on
-  `feat/containers`, which later moves to its own repo.
+- This repo isn't ours. Never commit to or push `main`. All work, this
+  brief included, lives on `feat/containers`, which later moves to its own
+  repo. The branch started at `6d1ef9f`; main up to `8f78d37` (uncensored
+  models, `--standard`, relay stations) was merged in on 2026-10-22 at the
+  user's request, so the fence now measures against that main.
 - Don't merge, rebase onto, or copy code from `feat/python-314-container`.
 - The one cherry-pick allowed is `330fd53` (`.flake8`).
 

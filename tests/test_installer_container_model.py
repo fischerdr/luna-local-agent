@@ -57,5 +57,37 @@ class Pick(unittest.TestCase):
         self.assertEqual(install.pick_model(0, 1.0)[0], "4b-q4")
 
 
+class ModelHf(unittest.TestCase):
+    """The pick becomes MODEL_HF for the containers - the uncensored files
+    (main's default) name their quant after a dot, Qwen's after a dash."""
+
+    def model_hf(self, key, uncensored):
+        import contextlib
+        import io
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "services"))
+            os.makedirs(os.path.join(tmp, "llama"))
+            row = install.variant(install._model_by_key(key), uncensored)
+            k, label, repo, file, size, mmproj, _least, ctx, _lms = row
+            with mock.patch.object(install, "ROOT", tmp), contextlib.redirect_stdout(io.StringIO()):
+                install.container_model({}, k, label, repo, file, mmproj, ctx)
+            with open(os.path.join(tmp, "services", "services.local.env")) as f:
+                return [ln for ln in f.read().splitlines() if ln.startswith("MODEL_HF=")][0]
+
+    def test_every_model_both_flavours(self):
+        for m in install.MODELS:
+            for uncensored in (True, False):
+                with self.subTest(model=m[0], uncensored=uncensored):
+                    row = install.variant(m, uncensored)
+                    quant = row[3].rsplit(".", 1)[0].replace("-", ".").rsplit(".", 1)[-1]
+                    self.assertEqual(self.model_hf(m[0], uncensored), f'MODEL_HF="{row[2]}:{quant}"')
+
+    def test_the_8gb_pick(self):
+        self.assertEqual(self.model_hf("4b", True),
+                         'MODEL_HF="mradermacher/Huihui-Qwen3.5-4B-abliterated-GGUF:Q6_K"')
+
+
 if __name__ == "__main__":
     unittest.main()

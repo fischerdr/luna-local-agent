@@ -238,6 +238,15 @@ import coffee  # noqa: E402
 
 coffee.start()                # her morning coffee (coffee.py), on the portrait
 
+# Relay stations (station.py): an old phone or tablet in another room,
+# when switched on in the settings
+import station  # noqa: E402
+
+if config.STATION_ENABLED:
+    _ok, _said = station.start()
+    if not _ok:
+        logbook.warn("station", "relay stations: %s", _said)
+
 # The webcam watching for someone in front of it (presence.py): greets on
 # arrival, looks at you, keeps quiet in an empty room.
 import presence  # noqa: E402
@@ -1169,6 +1178,15 @@ def handle_input(text):
         config.save_setting("portrait.hologram.enabled", "true" if word == "on" else "false")
         livefeed.emit("holo", on=word == "on")
         ui.add_message("system", f"Portrait hologram {word} (saved; an open portrait switches now).")
+        return
+
+    if text in ("/lights", "/lights on", "/lights off"):
+        import livefeed
+
+        word = text.split()[1] if " " in text else ("off" if config.PORTRAIT_LIGHTS_ENABLED else "on")
+        config.save_setting("portrait.lights.enabled", "true" if word == "on" else "false")
+        livefeed.lights_changed()
+        ui.add_message("system", f"Light strips {word} (saved; an open portrait switches now).")
         return
 
     if text == "/portrait models" or text.startswith("/portrait use"):

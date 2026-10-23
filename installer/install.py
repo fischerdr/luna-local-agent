@@ -55,6 +55,8 @@ EXTRAS = {
     "toys": (["websocket-client"], "the Buttplug plugin: toys of most brands through Intiface Central"),
     "camera": (["opencv-python-headless"], "look_at_camera: one webcam picture when you ask (off until you switch it on)"),
     "voices": (["speechbrain"], "tell people in the house apart by voice (/people enroll voice)"),
+    "stations": (["cryptography", "segno"], "talk to her from another room on an old phone or tablet (relay stations)"),
+    "satellites": (["aioesphomeapi"], "EXPERIMENTAL: ESPHome voice satellites (Satellite1, Voice PE) as relay stations"),
 }
 
 # ---------------------------------------------------------------------------
@@ -598,6 +600,39 @@ MODELS = (
      "", 0, 8192, "qwen3.5-4b@q4_k_m"),
 )
 
+# The same sizes, uncensored: huihui-ai's abliterated Qwen3.5 (refusals taken out
+# of the weights, nothing else retrained), quantised by mradermacher, with the
+# vision files. This is what most people run her on, so it's the default;
+# --standard (or "standard" when asked) keeps Qwen's own release.
+#   key: (label, repo, file, GB, mmproj, LM Studio name)
+_HUIHUI = "mradermacher/Huihui-Qwen3.5-{b}-abliterated-GGUF"
+UNCENSORED = {
+    "27b-q6": ("Qwen3.5 27B uncensored, Q6_K", _HUIHUI.format(b="27B"), "Huihui-Qwen3.5-27B-abliterated.Q6_K.gguf",
+               22.1, "Huihui-Qwen3.5-27B-abliterated.mmproj-f16.gguf"),
+    "27b": ("Qwen3.5 27B uncensored, Q4_K_M", _HUIHUI.format(b="27B"), "Huihui-Qwen3.5-27B-abliterated.Q4_K_M.gguf",
+            16.5, "Huihui-Qwen3.5-27B-abliterated.mmproj-f16.gguf"),
+    "9b": ("Qwen3.5 9B uncensored, Q8_0", _HUIHUI.format(b="9B"), "Huihui-Qwen3.5-9B-abliterated.Q8_0.gguf",
+           9.5, "Huihui-Qwen3.5-9B-abliterated.mmproj-f16.gguf"),
+    "9b-q6": ("Qwen3.5 9B uncensored, Q6_K", _HUIHUI.format(b="9B"), "Huihui-Qwen3.5-9B-abliterated.Q6_K.gguf",
+              7.4, "Huihui-Qwen3.5-9B-abliterated.mmproj-f16.gguf"),
+    "9b-q4": ("Qwen3.5 9B uncensored, Q4_K_M", _HUIHUI.format(b="9B"), "Huihui-Qwen3.5-9B-abliterated.Q4_K_M.gguf",
+              5.6, ""),
+    "4b": ("Qwen3.5 4B uncensored, Q6_K", _HUIHUI.format(b="4B"), "Huihui-Qwen3.5-4B-abliterated.Q6_K.gguf",
+           3.5, "Huihui-Qwen3.5-4B-abliterated.mmproj-f16.gguf"),
+    "4b-q4": ("Qwen3.5 4B uncensored, Q4_K_M", _HUIHUI.format(b="4B"), "Huihui-Qwen3.5-4B-abliterated.Q4_K_M.gguf",
+              2.7, ""),
+}
+
+
+def variant(m, uncensored=True):
+    """The table row as downloaded: the uncensored files for its size, or
+    Qwen's own (the row as it is)."""
+    if not uncensored or m[0] not in UNCENSORED:
+        return m
+    label, repo, file, size, mmproj = UNCENSORED[m[0]]
+    quant = file.rsplit(".", 2)[-2].lower()
+    return (m[0], label, repo, file, size, mmproj, m[6], m[7], f"{repo}@{quant}")
+
 
 def _gb(n):
     return round(n / (1 << 30), 1)
@@ -702,11 +737,19 @@ def model(state):
 
     vram, where = detect_vram()
 
+    # an install from before the uncensored choice existed has a model and no
+    # flavour: that model is Qwen's own, and a re-run mustn't swap it for another
+    flavour = state.get("flavour") or ("standard" if state.get("model") else "uncensored")
+    uncensored = not ARGS.standard and flavour != "standard"
+
     # run again: the model from last time stays unless one is asked for by name
     done = _model_by_key(state.get("model") or "")
+    if done:
+        done = variant(done, uncensored)
     if choice == "auto" and done:
         here = os.path.exists(os.path.join(ROOT, "llama", "models", done[3]))
         if state.get("backend") != "llama" or here:
+            state["flavour"] = "uncensored" if uncensored else "standard"
             ok(f"{done[1]} (set up last time; --model <size> picks another)")
             return
 
@@ -716,7 +759,14 @@ def model(state):
         warn(f"no model called {choice} - picking for this machine")
         m = pick_model(vram, reserve)
 
-    key, label, repo, file, size, mmproj, _least, ctx, lms_name = m
+    if not ARGS.yes and choice == "auto" and not ARGS.standard:
+        uncensored = choose("Uncensored or standard?", [
+            ("uncensored", "Uncensored (abliterated): answers anything you ask, the usual pick for a companion"),
+            ("standard", "Standard: Qwen's own release, which turns down some requests")],
+            "uncensored" if uncensored else "standard") == "uncensored"
+    state["flavour"] = "uncensored" if uncensored else "standard"
+
+    key, label, repo, file, size, mmproj, _least, ctx, lms_name = variant(m, uncensored)
     if vram:
         kept = f", {reserve:g} GB of it kept for her voice" if reserve else ""
         ok(f"{vram} GB to work with ({where}){kept}")
@@ -725,10 +775,11 @@ def model(state):
     print(f"  {label}: {size} GB{', with vision' if mmproj else ''}, {ctx // 1024}k context")
 
     if not ARGS.yes and choice == "auto":
-        options = [(m[0], f"{m[1]} ({m[4]} GB{', sees' if m[5] else ''})"
-                    + (" - too big for this machine" if vram and m[6] + reserve > vram else "")) for m in MODELS]
+        rows = [variant(r, uncensored) for r in MODELS]
+        options = [(r[0], f"{r[1]} ({r[4]} GB{', sees' if r[5] else ''})"
+                    + (" - too big for this machine" if vram and r[6] + reserve > vram else "")) for r in rows]
         key = choose("Which model?", options, key)
-        key, label, repo, file, size, mmproj, _least, ctx, lms_name = _model_by_key(key)
+        key, label, repo, file, size, mmproj, _least, ctx, lms_name = variant(_model_by_key(key), uncensored)
 
     if state.get("backend") == "container":
         container_model(state, key, label, repo, file, mmproj, ctx)
@@ -789,7 +840,9 @@ def container_model(state, key, label, repo, file, mmproj, ctx):
     volume on the first start, so nothing lands in llama/models."""
     import re
 
-    m = re.search(r"-((?:I?Q\d\w*)|F16|BF16)\.gguf$", file, re.I)
+    # the quant is the file's last part: Qwen_Qwen3.5-9B-Q6_K.gguf, or the
+    # uncensored ones' Huihui-Qwen3.5-9B-abliterated.Q6_K.gguf
+    m = re.search(r"[-.]((?:I?Q\d\w*)|F16|BF16)\.gguf$", file, re.I)
     hf = f"{repo}:{m.group(1)}" if m else repo
     set_env_line(os.path.join(ROOT, "services", "services.local.env"), "MODEL_HF", hf)
     local = os.path.join(ROOT, "llama", "server.local.env")
@@ -943,7 +996,8 @@ def validate_args(args, system=SYSTEM, which=shutil.which, exists=os.path.exists
     if args.check:
         given = [f"--{name.replace('_', '-')}" for name, default in
                  (("backend", None), ("remote", None), ("voice", None), ("gpu", "auto"), ("extras", None),
-                  ("model", "auto"), ("no_system", False), ("yes", False)) if getattr(args, name) != default]
+                  ("model", "auto"), ("standard", False), ("no_system", False), ("yes", False))
+                 if getattr(args, name, default) != default]
         if given:
             notes.append(f"--check only runs the health check - ignoring {', '.join(given)}")
         return args, errors, notes
@@ -1266,6 +1320,8 @@ def parser():
     ap.add_argument("--gpu", default="auto", choices=["auto", "cpu", "cuda", "rocm", "mps"])
     ap.add_argument("--extras", default=None)
     ap.add_argument("--model", default="auto")
+    ap.add_argument("--standard", action="store_true",
+                    help="Qwen's own release instead of the uncensored (abliterated) one")
     ap.add_argument("--no-system", action="store_true")
     ap.add_argument("--check", action="store_true")
     return ap
