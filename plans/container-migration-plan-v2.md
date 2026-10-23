@@ -87,6 +87,9 @@ git switch -c feat/containers 6d1ef9f
   - `main.py`: one line only, the stray `import config` in `/camera` that
     made `config` local to all of `handle_input` and crashed `/settings`
     (a bug already on main; approved 2026-10-23).
+  - `installer/requirements.txt`: one line, `av>=11,<19` - PyAV 19 dropped
+    the `metadata_errors` argument faster-whisper 1.2 still passes, so every
+    spoken turn failed on a fresh install (approved 2026-10-23).
   - Docs, additive only, exactly as listed in section 11: `README.md`,
     `docs/README.md`, `docs/_Sidebar.md`, `docs/install.md`,
     `docs/configuration.md`, `docs/development.md`, `docs/knowledge.md`,
