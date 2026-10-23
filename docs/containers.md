@@ -19,8 +19,8 @@ a Linux machine and point Luna at it ([another machine](#a-gpu-server-on-your-ne
 |---|---|---|---|
 | `luna-llama` | 8080 | `localhost/luna-services-llama:<gpu>` | her model, llama.cpp's server |
 | `luna-embed` | 8081 | `localhost/luna-services-llama:cpu` | embeddings, for recall by meaning |
-| `luna-rerank` | 8082 | `localhost/luna-services-llama:<gpu or cpu>` | the reranker |
-| `luna-tts` | 8899 | `localhost/luna-services-tts:<cpu or cuda>` | her voice, kokoro-reader |
+| `luna-rerank` | 8082 | `localhost/luna-services-llama:<gpu or cpu>` | the reranker (off when it can't keep up, see [Small GPUs](#small-gpus)) |
+| `luna-tts` | 8899 | `localhost/luna-services-tts:<cpu, cuda or cuda13>` | her voice, kokoro-reader |
 
 The ports are llama/server.env's `PORT`, `EMBED_PORT` and `RERANK_PORT`.
 They're published on `HOST` from that file, which is `127.0.0.1`: this
@@ -55,8 +55,11 @@ From the installer:
 ./installer/install.sh --backend container --voice container
 ```
 
-It picks a model for your GPU, as it does for llama.cpp, and hands over to
-`python -m services setup`. You can also run that yourself, in Luna's
+It picks a model for your GPU, as it does for llama.cpp - but keeps about
+1 GB free for her voice beside it ([Small GPUs](#small-gpus)) - and hands
+over to `python -m services setup`. Like main's installer it takes the
+uncensored release by default; `--standard` takes Qwen's own, and
+`--model <size>` another size. You can also run that yourself, in Luna's
 Python (`.venv/bin/python -m services setup`):
 
 ```bash
@@ -88,7 +91,10 @@ python -m services reset              # remove what it made (asks first)
 
 Roles are `chat`, `embed`, `rerank` and `tts`. `up` with no roles starts
 the three llama roles, and the voice once `setup tts` has moved it into
-its container.
+its container. A role switched off (`RERANK=off`, `EMBED=off`) is
+skipped, and `status` shows it as off rather than missing; with
+`EMBED_ONDEMAND=on` only chat (and the voice) start, the side models when
+they're wanted.
 
 `up` is safe to repeat. Each container carries a hash of everything that
 makes it up: its settings, image, model, key and token. One that matches
@@ -173,7 +179,7 @@ services.env adds:
 | `EMBED_HF` | `Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0` | the embedding model |
 | `RERANK_HF` | `ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF:Q8_0` | the reranker |
 | `LUNA_MODELS_DIR` | (none) | your own GGUFs, mounted read-only |
-| `EMBED_NGL` | `0` | the embedder's GPU layers: 0 is the CPU |
+| `EMBED_NGL` | `0` | the embedder's GPU layers: 0 is the CPU (bench raises it when there's room) |
 | `RERANK_NGL` | `0` | the reranker's GPU layers (bench raises it when there's room) |
 | `LLAMA_BACKEND` | `auto` | the image: `auto`, `cpu`, `cuda`, `cuda13`, `rocm`, `vulkan` |
 | `TTS_DEVICE` | `auto` | the voice: `auto` (the GPU on NVIDIA), `cpu`, `cuda` |
@@ -186,10 +192,14 @@ GPU at all, so it takes no video memory.
 
 ## Small GPUs
 
-On this machine the GPU goes to chat and her voice first. The reranker
-and the embedder get it only when there's room left after them;
-otherwise they run on the CPU, where the embedder takes about 30 ms a
-query and a slow rerank only means recall keeps the embedding order.
+On this machine the GPU goes to chat and her voice first. The reranker,
+then the embedder, get it only when there's room left after them, with
+10% of the card kept free. Otherwise they run on the CPU: the embedder
+takes about 30 ms a query there. The reranker only runs on the CPU when it
+keeps up - a rerank of 24 facts under 1.5 seconds, inside the 2 seconds
+recall waits for it. When it can't, it's off (`RERANK=off`) and recall
+keeps the embedding order, which is what every timed-out rerank would
+have done anyway.
 
 The installer's model pick keeps about 1 GB free for the voice when it
 runs on an NVIDIA card. On 8 GB that's Qwen3.5 4B (Q6_K, with vision)
@@ -199,14 +209,11 @@ rather than the 9B, which is one `--model 9b-q4` away.
 python -m services bench
 ```
 
-measures the room: chat (by its size and `CTX` when it isn't running),
-then the voice, then the reranker, then the embedder, each on the GPU
-only if it fits with 10% of the card kept free. On the CPU the reranker
-only runs when a rerank of 24 different facts takes under 1.5 seconds
-there; otherwise it's off (`RERANK=off` in llama/server.local.env) and
-recall keeps the embedding order, since it would miss the 2-second limit
-every time anyway. It writes `TTS_DEVICE`,
-`RERANK_NGL` and `EMBED_NGL` to services.local.env only if you say so.
+measures it: chat (by its file, its `CTX` and its working memory when it
+isn't running), the voice, the reranker and the embedder, and times one
+embedding and a rerank of 24 different facts on the CPU. It writes
+`TTS_DEVICE`, `RERANK_NGL` and `EMBED_NGL` to services.local.env, and
+`RERANK=off` (or back on) to llama/server.local.env, only if you say so.
 Setup offers to run it on a machine with a GPU. A remote server's
 placement is its own (`deploy/.env`).
 
@@ -377,10 +384,18 @@ upstream's llama.cpp and `python:3.12-slim` images. So everything
 downloads and builds again.
 
 Source files, committed or not, are never touched. Neither are system
-packages (the installer runs with `--no-system`), your Hugging Face cache and token, LM Studio's models, the
-kokoro-reader clone, or other containers and images. The installer runs
-with `--no-system`, so it never needs sudo. `check.sh` changes nothing
-but a cache: three test facts' vectors.
+packages (the installer runs with `--no-system`, so it never needs sudo),
+your Hugging Face cache and token, LM Studio's models, the kokoro-reader
+clone, or other containers and images.
+
+On a network drive (NFS), a file a running program still holds - an
+editor's Python tools running from `.venv`, say - can't go until that
+program exits; `reset.sh` names them and carries on. Restart those tools
+(or reload the editor) once the install has made `.venv` again.
+
+`check.sh` changes nothing but a cache (three test facts' vectors). A
+reranker that's off on purpose counts as fine, and it counts embed
+timeouts in her log only since she last started.
 
 ## What was checked
 
@@ -410,3 +425,14 @@ On Fedora 43 (SELinux), rootless Podman 5.8.8, an RTX 3070 (8 GB, CUDA 13).
 - **Compose**: every file validates with Podman Compose 1.5 and Docker
   Compose v2. An empty `hf_token` file is fine there (compose mounts it),
   and means no token.
+- **Room on an 8 GB card** (measured per process, matched to containers):
+  a 4B Q6_K chat at 8k context takes 4840 MiB, the voice on CUDA 882, the
+  0.6B reranker 1124, and the desktop and driver about 550-690 before any
+  of them. bench counts chat as its file, its context and 1150 MiB, the
+  voice 950, a side model its file and 550.
+- **On the CPU**, 16 threads: an embedding of one query 0.02 s, of 30 new
+  facts 1.5 s; a rerank of 24 different facts 5 s - so the reranker is off
+  there. (Timed with one fact 24 times, llama.cpp's prompt cache made it
+  look like 0.6 s.)
+- **From zero** (`tests/zero/reset.sh --install`): a full reset, install,
+  start and check takes 7-8 minutes here, downloads included.

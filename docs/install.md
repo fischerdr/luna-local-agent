@@ -36,7 +36,9 @@ system:
    built here (Linux) for the research features.
    Or llama.cpp in Podman containers, with nothing built here
    (`--backend container`), or on a GPU server on your network
-   (`--remote <address>`). See [Containers](containers.md).
+   (`--remote <address>`). See [Containers](containers.md). With
+   containers, the model pick below keeps about 1 GB free for her voice
+   on the GPU, so an 8 GB card gets the 4B rather than the 9B.
 6. **Her model, picked for your machine.** These are the models I run
    and test her on, not the only ones she works with: any model with tool
    calling on llama.cpp or LM Studio should do (see [Models](models.md)
@@ -408,9 +410,11 @@ everything else, these lines in `llama/server.env` free the most:
 A smaller quant of the chat model (Q4 instead of Q6 or Q8) saves the
 most of all.
 
-In containers, the embedder already runs on the CPU (`EMBED_NGL=0`), and
-`RERANK_NGL` in `services/services.local.env` moves the reranker; `python
--m services bench` says which fits ([Small GPUs](containers.md#small-gpus)).
+In containers, the GPU goes to chat and her voice first; the reranker and
+embedder get it only when there's room (`RERANK_NGL`, `EMBED_NGL` in
+`services/services.local.env`), else the CPU, and the reranker is off when
+the CPU is too slow for it. `python -m services bench` measures it
+([Small GPUs](containers.md#small-gpus)).
 
 ---
 

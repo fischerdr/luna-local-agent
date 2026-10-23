@@ -55,7 +55,8 @@ ai-voice/
 │   ├── lifecycle.py  #   up (keep or make anew), down, status, ports, reset
 │   ├── keys.py       #   the key and the Hugging Face token as Podman secrets
 │   ├── setup.py      #   setup, setup tts, setup --server
-│   ├── bench.py      #   where the side models go on a small GPU
+│   ├── bench.py      #   what goes on the GPU: chat and voice first, then the side models
+│   ├── ondemand.py   #   the embedder and reranker started when wanted (EMBED_ONDEMAND)
 │   ├── services.env  #   the containers' own settings (services.local.env is yours)
 │   ├── llama/        #   the llama image: Dockerfile, entrypoint.sh (ROLE=chat|embed|rerank)
 │   └── tts/          #   the voice image: Dockerfile (kokoro-reader, pinned)
@@ -107,6 +108,8 @@ ai-voice/
 ├── interrupts.py     # stopping her: each turn's own Stop (speaking, generating, listening); HOME, barge-in, !stop
 ├── turnctx.py        # the running turn: who started it, its passes (job, Discord), what it has seen
 ├── tests/            # python -m unittest discover tests - turn safety, stopping her
+│   ├── containers/   #   opt-in tests against real Podman (LUNA_CONTAINER_TESTS=1)
+│   └── zero/         #   reset.sh (back to just after git clone) and check.sh
 ├── timeutil.py
 ├── tools/
 │   ├── __init__.py   # the registry - @tool, specs, the on/off switches
@@ -217,13 +220,20 @@ first in a new test file.
 
 `tests/test_services_*.py`, `tests/test_installer_options.py`,
 `tests/test_installer_remote.py`, `tests/test_installer_voice_choice.py`,
-`tests/test_launch_autostart.py` and `tests/test_compose_drift.py` cover
-the containers without Podman: settings and models, each `podman run`,
-image choice, secrets, keep-or-replace, the installer's flags, and that
+`tests/test_launch_autostart.py`, `tests/test_compose_drift.py`,
+`tests/test_ondemand.py`, `tests/test_install_sh.py`,
+`tests/test_installer_container_model.py` and `tests/test_main_unchanged.py`
+cover the containers without Podman: settings and models, each `podman
+run`, image choice, secrets, keep-or-replace, GPU placement, the
+installer's flags and model pick, the newer-Python fallback, and that
 `./start.sh` with no `services` block does what it always did.
+`tests/test_doc_links.py` checks the docs' links and commands.
 `tests/containers/` runs the real thing, opt-in, on its own `luna-test-*`
 containers: `LUNA_CONTAINER_TESTS=1 python -m unittest discover -v tests/containers`
-([Containers](containers.md#tests)).
+([Containers](containers.md#tests)). `tests/zero/reset.sh --install` puts
+the checkout and machine back to just after `git clone` and installs
+from there; `tests/zero/check.sh` checks any install
+([From zero](containers.md#from-zero)).
 
 Run them after touching tools, the turn code, the permission checks or
 anything that stops her.
