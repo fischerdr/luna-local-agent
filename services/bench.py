@@ -3,12 +3,13 @@
 The GPU goes to chat and her voice first. The reranker, then the
 embedder, get it only if there's room left after them (10% kept free);
 otherwise they run on the CPU - the embedder is a few dozen tokens a
-query, and a slow rerank only means recall keeps the embedding order.
+query; the reranker only when it finishes in time there, else it's off
+and recall keeps the embedding order.
 
 The CPU timings come from a short-lived luna-bench container on a spare
 loopback port; nothing of yours is stopped or changed. The result is
 printed, and written only if you say so: EMBED_NGL, RERANK_NGL and
-TTS_DEVICE to services/services.local.env.
+TTS_DEVICE to services/services.local.env, RERANK to llama/server.local.env.
 """
 import os
 import re
@@ -20,7 +21,7 @@ import time
 
 import requests
 
-from services import CONTAINER, KEY_SECRET, VOLUME, images, keys, lifecycle, settings
+from services import CONTAINER, KEY_SECRET, LLAMA_DIR, VOLUME, images, keys, lifecycle, settings
 
 SPARE = 0.10            # of the VRAM, kept free
 RERANK_CPU_MAX = 1.5    # seconds for a 24-candidate rerank
@@ -28,8 +29,22 @@ CANDIDATES = 24
 MIB = 1 << 20
 
 QUERY = "what did I say about my sister's new job"
-FACT = ("The user's sister started a new job as a nurse at the hospital in March, "
-        "and the user mentioned the night shifts are hard on her.")
+# 24 different facts, as recall sends: the same one 24 times would come out
+# of llama.cpp's prompt cache and time almost nothing.
+FACTS = [f"The user {what}, back in {month}." for what, month in zip((
+    "said their sister started a new job as a nurse", "mentioned the night shifts are hard",
+    "likes jazz records from the fifties", "has a cat called Miso who sleeps on the radiator",
+    "is learning to bake sourdough bread", "drives a blue hatchback with a dented door",
+    "plays chess online most evenings", "wants to visit Lisbon next spring",
+    "keeps tomatoes and basil on the balcony", "fixed the kitchen tap themselves",
+    "reads science fiction before bed", "runs five kilometres on Saturdays",
+    "works on a home server with a big GPU", "dislikes loud restaurants",
+    "has a brother who lives in Toronto", "collects old film cameras",
+    "started a course in Spanish", "repainted the hallway green",
+    "is allergic to peanuts", "watches football with their dad",
+    "built a bookshelf out of pallets", "is saving for a new bike",
+    "volunteers at the library on Thursdays", "prefers tea to coffee in the afternoon"),
+    ("March", "April", "May", "June", "July", "August") * 4)]
 
 
 def vram(run=subprocess.run):
@@ -52,12 +67,13 @@ def recommend(total, used, rerank_need, rerank_cpu, voice_need=0, embed_need=0):
     """What goes where, for these numbers: ({setting: value}, [why]).
 
     The GPU goes to chat and her voice first; the reranker, then the
-    embedder, get it only if there's room after them, and run on the CPU
-    otherwise. total and used are MiB, used counting chat but nothing else
+    embedder, get it only if there's room after them. Otherwise they run on
+    the CPU - the reranker only when a rerank there finishes in time
+    (under RERANK_CPU_MAX), else it's off. total and used are MiB, used counting chat but nothing else
     (used=None without a GPU); voice_need is the voice's MiB on the GPU (0
     when it isn't asking for it), rerank_need and embed_need the side
     models'; rerank_cpu the seconds a 24-candidate rerank takes on the CPU,
-    or None - only said, since a slow rerank just keeps the embedding order."""
+    or None when it couldn't be timed."""
     out, why = {"EMBED_NGL": 0, "RERANK_NGL": 0, "RERANK": "auto"}, []
     gpu = bool(total) and used is not None
     room = total * (1 - SPARE) - used if gpu else 0
@@ -76,12 +92,17 @@ def recommend(total, used, rerank_need, rerank_cpu, voice_need=0, embed_need=0):
             room -= need
             out[key] = 99
             why.append(f"the {name} fits on the GPU too ({need} MiB)")
+        elif key == "RERANK_NGL" and need and (rerank_cpu is None or rerank_cpu >= RERANK_CPU_MAX):
+            # Too slow on the CPU to finish inside embedmem's timeout: every
+            # rerank would fail over to the embedding order anyway.
+            out["RERANK"] = "off"
+            took = f"{rerank_cpu:.1f} s" if rerank_cpu is not None else "too long to time"
+            why.append(("no room for the reranker on the GPU, " if gpu else "")
+                       + f"and a rerank takes {took} on the CPU - off; recall keeps the embedding order")
         else:
-            why.append(f"the {name} on the CPU" + (" - no room left on the GPU" if gpu else ""))
-    if out["RERANK_NGL"] == 0 and rerank_cpu is not None:
-        slow = rerank_cpu >= RERANK_CPU_MAX
-        note = " - slow, so recall often keeps the embedding order" if slow else ""
-        why.append(f"a rerank takes {rerank_cpu:.2f} s on the CPU{note}")
+            where = " - no room left on the GPU" if gpu else ""
+            took = f" ({rerank_cpu:.2f} s a rerank)" if key == "RERANK_NGL" and rerank_cpu is not None else ""
+            why.append(f"the {name} on the CPU{where}{took}")
     if gpu:
         why.append(f"GPU: about {int(total * (1 - SPARE) - room)} of {total} MiB in use, "
                    f"{int(SPARE * 100)}% kept free")
@@ -157,7 +178,7 @@ def cpu_timing(role, s, m, key, out=print):
             return None
         if role == "embed":
             return timed(requests.post, url + "/v1/embeddings", {"input": QUERY}, key)
-        docs = [FACT] * CANDIDATES
+        docs = FACTS[:CANDIDATES]
         return timed(requests.post, url + "/v1/rerank", {"query": QUERY, "documents": docs}, key)
     except requests.RequestException:
         return None
@@ -216,12 +237,17 @@ def bench(a, out=print):
     for line in why:
         out(f"  {line}")
     out("  " + " ".join(f"{k}={v}" for k, v in place.items()))
-    if not a.ask("Write that down (services/services.local.env)?"):
+    if not a.ask("Write that down (services/services.local.env, and RERANK in llama/server.local.env)?"):
         return True
     from services.setup import LOCAL_ENV, set_env
 
     for k in ("EMBED_NGL", "RERANK_NGL", "TTS_DEVICE"):
         if k in place:
             set_env(LOCAL_ENV, k, str(place[k]))
+    # RERANK is llama/server.env's own switch: off goes in its local file,
+    # and a reranker that runs again turns it back on there.
+    local = os.path.join(LLAMA_DIR, "server.local.env")
+    if place["RERANK"] == "off" or s["RERANK"] == "off":
+        set_env(local, "RERANK", place["RERANK"])
     out("  written - python -m services up applies it")
     return True

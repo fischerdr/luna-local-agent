@@ -103,7 +103,9 @@ class KeyFile(unittest.TestCase):
             key = keys.make_key(path)
             self.assertEqual(oct(os.stat(path).st_mode & 0o777), "0o600")
             self.assertEqual(keys.read_key(path), key)
-            self.assertGreaterEqual(len(key), 40)
+            # 32 random bytes in base64 (43 characters and a =), less the
+            # / and + taken out: the length varies, so only a floor holds
+            self.assertGreaterEqual(len(key), 32)
             self.assertFalse(set(key) & set("/+=\n"))
             self.assertNotEqual(keys.make_key(path), key)      # random, not a pattern
 

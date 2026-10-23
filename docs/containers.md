@@ -201,7 +201,11 @@ python -m services bench
 
 measures the room: chat (by its size and `CTX` when it isn't running),
 then the voice, then the reranker, then the embedder, each on the GPU
-only if it fits with 10% of the card kept free. It writes `TTS_DEVICE`,
+only if it fits with 10% of the card kept free. On the CPU the reranker
+only runs when a rerank of 24 different facts takes under 1.5 seconds
+there; otherwise it's off (`RERANK=off` in llama/server.local.env) and
+recall keeps the embedding order, since it would miss the 2-second limit
+every time anyway. It writes `TTS_DEVICE`,
 `RERANK_NGL` and `EMBED_NGL` to services.local.env only if you say so.
 Setup offers to run it on a machine with a GPU. A remote server's
 placement is its own (`deploy/.env`).

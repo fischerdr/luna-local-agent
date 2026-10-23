@@ -17,7 +17,8 @@ from services import bench  # noqa: E402
 
 class Recommend(unittest.TestCase):
     """Chat and her voice get the GPU first; the reranker, then the embedder,
-    only if there's room after them - else the CPU, never off."""
+    only if there's room after them - else the CPU, and the reranker only when
+    it's quick enough there (else off)."""
 
     def test_room_for_everything(self):
         place, _ = bench.recommend(24576, 9000, 1000, 0.5, voice_need=1000, embed_need=1000)
@@ -39,10 +40,26 @@ class Recommend(unittest.TestCase):
         self.assertEqual(bench.recommend(8192, 6500, 1000, 0.8)[0]["RERANK_NGL"], 0)
         self.assertEqual(bench.recommend(8192, 6300, 1000, 0.8)[0]["RERANK_NGL"], 99)
 
-    def test_never_off_a_slow_cpu_only_says_so(self):
-        place, why = bench.recommend(8192, 7900, 1000, 2.4)
-        self.assertEqual((place["RERANK_NGL"], place["RERANK"]), (0, "auto"))
+    def test_off_when_the_cpu_is_too_slow(self):
+        # the measured 5.3 s for 24 facts: every rerank would miss embedmem's 2 s
+        place, why = bench.recommend(8192, 7900, 1000, 5.3)
+        self.assertEqual((place["RERANK_NGL"], place["RERANK"]), (0, "off"))
         self.assertIn("embedding order", " ".join(why))
+
+    def test_on_the_cpu_when_quick_enough(self):
+        place, why = bench.recommend(8192, 7900, 1000, 0.8)
+        self.assertEqual((place["RERANK_NGL"], place["RERANK"]), (0, "auto"))
+
+    def test_off_when_it_couldnt_be_timed(self):
+        self.assertEqual(bench.recommend(8192, 7900, 1000, None)[0]["RERANK"], "off")
+
+    def test_the_embedder_is_never_off(self):
+        place, _ = bench.recommend(None, None, 1000, 9.0, embed_need=1000)
+        self.assertEqual((place["EMBED_NGL"], place["RERANK"]), (0, "off"))
+
+    def test_timed_with_different_facts(self):
+        # identical ones come out of llama.cpp's prompt cache
+        self.assertEqual(len(set(bench.FACTS[:bench.CANDIDATES])), bench.CANDIDATES)
 
     def test_no_room_for_the_voice(self):
         place, why = bench.recommend(8192, 6900, 1000, 0.5, voice_need=1000)
@@ -55,7 +72,7 @@ class Recommend(unittest.TestCase):
         self.assertIn("--model 4b", why[0])
 
     def test_no_gpu(self):
-        place, _ = bench.recommend(None, None, 1000, 5.0, embed_need=1000)
+        place, _ = bench.recommend(None, None, 1000, 0.9, embed_need=1000)
         self.assertEqual(place, {"EMBED_NGL": 0, "RERANK_NGL": 0, "RERANK": "auto"})
 
     def test_a_cpu_voice_isnt_counted(self):
