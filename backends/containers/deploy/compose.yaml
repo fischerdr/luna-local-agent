@@ -1,0 +1,155 @@
+# Luna's backend on a GPU server on your network: chat, embeddings,
+# reranker and her voice, the same images and roles as the local
+# containers (python -m backends.containers), always on.
+#
+#   cp .env.example .env              then set LUNA_BIND and MODEL_HF in it
+#   python -m backends.containers setup --server --allow <the client's IP>
+#   podman compose -f compose.yaml -f compose.cuda.yaml up -d      (or docker compose,
+#                                                  with compose.cuda.docker.yaml)
+#
+# Plain HTTP on a trusted LAN: the API key guards chat, embeddings and the
+# reranker, but it travels unencrypted, and the voice takes no key at all -
+# the firewall rule setup --server prints (one client IP) is the second
+# layer. Ports bind to LUNA_BIND only; compose refuses to start without it.
+# This file is the cpu setup; a compose.<gpu>.yaml on top hands the GPU in.
+name: ${COMPOSE_PROJECT_NAME:-luna}
+
+services:
+  llama:
+    restart: unless-stopped
+    secrets:
+      - source: api_key
+        target: api_key
+      - source: hf_token
+        target: hf_token
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10m
+    build:
+      context: ../llama
+      args:
+        BACKEND: ${LLAMA_TAG:-server}
+        BASE_DIGEST: ${LLAMA_DIGEST:-sha256:8c74db29f1a2bef3f0a331b52c4d6214601dfceed4bee0b94cc48b3b23ff257d}
+    image: localhost/luna-deploy-llama:${LLAMA_BUILD:-cpu}
+    environment:
+      ROLE: chat
+      LUNA_HF: ${MODEL_HF:?set MODEL_HF in deploy/.env}
+      ALIAS: ${ALIAS:-}
+      CTX: ${CTX:-16384}
+      NGL: ${NGL:-99}
+      THREADS: ${THREADS:-9}
+      BATCH: ${BATCH:-4096}
+      UBATCH: ${UBATCH:-2048}
+      PARALLEL: ${PARALLEL:-4}
+      KV_UNIFIED: ${KV_UNIFIED:-1}
+      CTX_CHECKPOINTS: ${CTX_CHECKPOINTS:-32}
+      REASONING_FORMAT: ${REASONING_FORMAT:-deepseek}
+      REASONING_BUDGET: ${REASONING_BUDGET:--1}
+      EXTRA: ${EXTRA:-}
+      MMPROJ: ${MMPROJ:-}
+    volumes:
+      - models:/models
+      - data:/data
+    ports:
+      - "${LUNA_BIND:?set LUNA_BIND to this server's LAN IP}:${CHAT_PORT:-8080}:8080"
+
+  # The embedder runs on the CPU (EMBED_NGL=0), in the cpu image, so it
+  # takes no VRAM; a GPU file on top leaves it alone.
+  embed:
+    restart: unless-stopped
+    secrets:
+      - source: api_key
+        target: api_key
+      - source: hf_token
+        target: hf_token
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10m
+    build:
+      context: ../llama
+      args:
+        BACKEND: server
+        BASE_DIGEST: sha256:8c74db29f1a2bef3f0a331b52c4d6214601dfceed4bee0b94cc48b3b23ff257d
+    image: localhost/luna-deploy-llama:cpu
+    environment:
+      ROLE: embed
+      LUNA_HF: ${EMBED_HF:-Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0}
+      THREADS: ${THREADS:-9}
+      EMBED_CTX: ${EMBED_CTX:-2048}
+      EMBED_POOLING: ${EMBED_POOLING:-last}
+      EMBED_NGL: "0"
+    volumes:
+      - models:/models
+    ports:
+      - "${LUNA_BIND:?set LUNA_BIND to this server's LAN IP}:${EMBED_PORT:-8081}:8080"
+
+  rerank:
+    restart: unless-stopped
+    secrets:
+      - source: api_key
+        target: api_key
+      - source: hf_token
+        target: hf_token
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10m
+    build:
+      context: ../llama
+      args:
+        BACKEND: ${LLAMA_TAG:-server}
+        BASE_DIGEST: ${LLAMA_DIGEST:-sha256:8c74db29f1a2bef3f0a331b52c4d6214601dfceed4bee0b94cc48b3b23ff257d}
+    image: localhost/luna-deploy-llama:${LLAMA_BUILD:-cpu}
+    environment:
+      ROLE: rerank
+      LUNA_HF: ${RERANK_HF:-ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF:Q8_0}
+      THREADS: ${THREADS:-9}
+      RERANK_CTX: ${RERANK_CTX:-2048}
+      RERANK_NGL: ${RERANK_NGL:-99}
+    volumes:
+      - models:/models
+    ports:
+      - "${LUNA_BIND:?set LUNA_BIND to this server's LAN IP}:${RERANK_PORT:-8082}:8080"
+
+  tts:
+    build:
+      context: ../tts
+      args:
+        TORCH_INDEX: ${TORCH_INDEX:-https://download.pytorch.org/whl/cpu}
+    image: localhost/luna-deploy-tts:${TTS_BUILD:-cpu}
+    restart: unless-stopped
+    init: true
+    environment:
+      KOKORO_DEVICE: ${TTS_DEVICE:-cpu}
+      KOKORO_VOICE: ${VOICE:-af_bella}
+    volumes:
+      - tts-cache:/cache
+    ports:
+      - "${LUNA_BIND:?set LUNA_BIND to this server's LAN IP}:${TTS_PORT:-8899}:8899"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8899/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10m
+
+volumes:
+  models:
+    name: ${LUNA_VOLUMES:-luna}-models
+  data:
+    name: ${LUNA_VOLUMES:-luna}-data
+  tts-cache:
+    name: ${LUNA_VOLUMES:-luna}-tts-cache
+
+# Files beside this one. api_key: the key the client copies into its own
+# llama/.api_key. hf_token: yours, for gated models - setup --server makes
+# an empty one when there's none, which means none.
+secrets:
+  api_key:
+    file: ${LUNA_API_KEY_FILE:-./api_key}
+  hf_token:
+    file: ${HF_TOKEN_FILE:-./hf_token}

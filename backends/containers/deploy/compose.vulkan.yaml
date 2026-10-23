@@ -1,0 +1,28 @@
+# AMD or Intel through Vulkan (Mesa). The voice stays on the CPU.
+#   podman compose -f compose.yaml -f compose.vulkan.yaml up -d   (or docker compose)
+# Add "render" under group_add if the server has a render group.
+services:
+  llama:
+    build:
+      args:
+        BACKEND: ${LLAMA_TAG:-server-vulkan}
+        BASE_DIGEST: ${LLAMA_DIGEST:-sha256:a644fb651975d9dea49140302577a3b945993fd5efd3400bf89c7d525d03c103}
+    image: localhost/luna-deploy-llama:${LLAMA_BUILD:-vulkan}
+    devices:
+      - /dev/dri
+    group_add:
+      - video
+    security_opt:
+      - label=disable
+  rerank:
+    build:
+      args:
+        BACKEND: ${LLAMA_TAG:-server-vulkan}
+        BASE_DIGEST: ${LLAMA_DIGEST:-sha256:a644fb651975d9dea49140302577a3b945993fd5efd3400bf89c7d525d03c103}
+    image: localhost/luna-deploy-llama:${LLAMA_BUILD:-vulkan}
+    devices:
+      - /dev/dri
+    group_add:
+      - video
+    security_opt:
+      - label=disable

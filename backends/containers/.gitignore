@@ -1,0 +1,5 @@
+# This machine's settings, and a compose server's settings and secrets
+services.local.env
+deploy/.env
+deploy/api_key
+deploy/hf_token

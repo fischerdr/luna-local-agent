@@ -1,0 +1,45 @@
+# NVIDIA, with Docker: the GPU by Docker's device reservation. Needs
+# nvidia-container-toolkit on the server.
+#   docker compose -f compose.yaml -f compose.cuda.docker.yaml up -d
+# Older than CUDA 13: see compose.cuda.yaml for the .env lines.
+services:
+  llama:
+    build:
+      args:
+        BACKEND: ${LLAMA_TAG:-server-cuda13}
+        BASE_DIGEST: ${LLAMA_DIGEST:-sha256:dfe42bda81c6bd53df864dfcf65e2423e9703f9991c238cfa7aaa893063e2977}
+    image: localhost/luna-deploy-llama:${LLAMA_BUILD:-cuda13}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+  rerank:
+    build:
+      args:
+        BACKEND: ${LLAMA_TAG:-server-cuda13}
+        BASE_DIGEST: ${LLAMA_DIGEST:-sha256:dfe42bda81c6bd53df864dfcf65e2423e9703f9991c238cfa7aaa893063e2977}
+    image: localhost/luna-deploy-llama:${LLAMA_BUILD:-cuda13}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+  tts:
+    build:
+      args:
+        TORCH_INDEX: ${TORCH_INDEX:-https://download.pytorch.org/whl/cu130}
+    image: localhost/luna-deploy-tts:${TTS_BUILD:-cuda13}
+    environment:
+      KOKORO_DEVICE: cuda
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

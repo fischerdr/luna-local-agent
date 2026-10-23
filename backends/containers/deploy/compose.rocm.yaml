@@ -1,0 +1,32 @@
+# AMD with ROCm (x86_64). The voice stays on the CPU: no ROCm torch here.
+#   podman compose -f compose.yaml -f compose.rocm.yaml up -d   (or docker compose)
+# Add "render" under group_add if the server has a render group.
+services:
+  llama:
+    build:
+      args:
+        BACKEND: ${LLAMA_TAG:-server-rocm}
+        BASE_DIGEST: ${LLAMA_DIGEST:-sha256:bdbbab3b239f4a7ada461ddb82b01d7328c6988e194572ae4f08144b710f1013}
+    image: localhost/luna-deploy-llama:${LLAMA_BUILD:-rocm}
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - video
+    security_opt:
+      - seccomp=unconfined
+      - label=disable
+  rerank:
+    build:
+      args:
+        BACKEND: ${LLAMA_TAG:-server-rocm}
+        BASE_DIGEST: ${LLAMA_DIGEST:-sha256:bdbbab3b239f4a7ada461ddb82b01d7328c6988e194572ae4f08144b710f1013}
+    image: localhost/luna-deploy-llama:${LLAMA_BUILD:-rocm}
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - video
+    security_opt:
+      - seccomp=unconfined
+      - label=disable

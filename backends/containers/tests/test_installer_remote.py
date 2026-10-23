@@ -1,0 +1,248 @@
+"""--remote: her servers on another machine (this backend's installer.py). The
+address, the URLs written to config.json, the key, and what the probe says.
+A temporary repo folder; the network is pretended.
+
+    python -m unittest discover -s backends/containers/tests -t .
+"""
+import contextlib
+import importlib.util
+import io
+import json
+import os
+import shutil
+import sys
+import tempfile
+import unittest
+import urllib.error
+from unittest import mock
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+
+from tests.offline import FAKE  # noqa: E402,F401  (first: no real servers)
+
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+spec = importlib.util.spec_from_file_location("luna_installer_remote", os.path.join(ROOT, "installer", "install.py"))
+install = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(install)
+
+from backends.containers import installer  # noqa: E402
+
+
+class Address(unittest.TestCase):
+    def test_good(self):
+        for addr in ("192.168.1.50", "10.0.0.2", "fd00::5", "gpu-box", "gpu-box.lan"):
+            with self.subTest(addr=addr):
+                self.assertIsNone(installer.check_address(addr))
+
+    def test_bad(self):
+        for addr in ("127.0.0.1", "127.1.2.3", "::1", "localhost", "0.0.0.0", "a b", "-x.lan", "x..lan"):
+            with self.subTest(addr=addr):
+                self.assertIsNotNone(installer.check_address(addr))
+
+    def test_url_host(self):
+        self.assertEqual(installer.url_host("192.168.1.50"), "192.168.1.50")
+        self.assertEqual(installer.url_host("fd00::5"), "[fd00::5]")
+        self.assertEqual(installer.url_host("gpu-box.lan"), "gpu-box.lan")
+
+
+class Response:
+    def __init__(self, status):
+        self.status = status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def answering(codes):
+    """A urlopen that answers each port with its code (None = no answer)."""
+    def get(req, timeout):
+        port = int(req.full_url.split(":")[-1].split("/")[0])
+        code = codes.get(port)
+        if code is None:
+            raise urllib.error.URLError("refused")
+        if code >= 400:
+            raise urllib.error.HTTPError(req.full_url, code, "no", {}, io.BytesIO())
+        return Response(code)
+    return get
+
+
+class Probe(unittest.TestCase):
+    def test_all_up(self):
+        lines = installer.remote_probe("10.0.0.2", "k", get=answering({8080: 200, 8081: 200, 8082: 200, 8899: 200}))
+        self.assertTrue(all(good for _n, good, _l in lines))
+        self.assertEqual([n for n, _g, _l in lines], ["chat", "embeddings", "reranker", "voice"])
+
+    def test_wrong_key(self):
+        lines = installer.remote_probe("10.0.0.2", "k", get=answering({8080: 401, 8081: 401, 8082: 401, 8899: 200}))
+        self.assertIn("key doesn't match the server's", lines[0][2])
+        self.assertTrue(lines[3][1])
+
+    def test_no_answer_says_what_to_check(self):
+        with mock.patch.object(installer, "client_ip", return_value="10.0.0.9"):
+            lines = installer.remote_probe("10.0.0.2", "k", get=answering({}))
+        self.assertFalse(lines[0][1])
+        for words in ("server is up", "LUNA_BIND", "firewall", "10.0.0.9"):
+            self.assertIn(words, lines[0][2])
+
+    def test_key_goes_as_a_bearer_header(self):
+        seen = []
+
+        def get(req, timeout):
+            seen.append(req.headers.get("Authorization"))
+            return Response(200)
+        installer.remote_probe("10.0.0.2", "the-key", get=get)
+        self.assertEqual(seen[0], "Bearer the-key")
+
+
+class Setup(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        os.makedirs(os.path.join(self.tmp.name, "llama"))
+        shutil.copy(os.path.join(ROOT, "config.example.json"), os.path.join(self.tmp.name, "config.example.json"))
+        for p in (mock.patch.object(install, "ROOT", self.tmp.name), mock.patch.object(installer, "ROOT", self.tmp.name)):
+            p.start()
+            self.addCleanup(p.stop)
+        install.REPORT.clear()
+
+    def config(self):
+        with open(os.path.join(self.tmp.name, "config.json")) as f:
+            return json.load(f)
+
+    def key_path(self):
+        return os.path.join(self.tmp.name, "llama", ".api_key")
+
+    def run_remote(self, host, answers=(), yes=False, codes=None):
+        install.ARGS = install.parser().parse_args(["--remote", host] + (["--yes"] if yes else []))
+        codes = codes if codes is not None else {8080: 200, 8081: 200, 8082: 200, 8899: 200}
+        with mock.patch("builtins.input", side_effect=list(answers)), \
+             mock.patch.object(installer.urllib.request, "urlopen", side_effect=answering(codes)), \
+             contextlib.redirect_stdout(io.StringIO()) as out:
+            installer.remote(install.INST, {})
+        return out.getvalue()
+
+    def test_urls_and_autostart(self):
+        self.run_remote("192.168.1.50", answers=["abc"])
+        llm = self.config()["llm"]
+        self.assertEqual(llm["backend"], "llama")
+        self.assertEqual(llm["llama_url"], "http://192.168.1.50:8080/v1/chat/completions")
+        self.assertEqual(llm["embed_url"], "http://192.168.1.50:8081/v1/embeddings")
+        self.assertEqual(llm["rerank_url"], "http://192.168.1.50:8082/v1/rerank")
+        self.assertIs(llm["autostart"], False)
+
+    def test_ipv6_urls(self):
+        self.run_remote("fd00::5", answers=["abc"])
+        self.assertEqual(self.config()["llm"]["llama_url"], "http://[fd00::5]:8080/v1/chat/completions")
+
+    def test_key_is_private(self):
+        self.run_remote("192.168.1.50", answers=["the-servers-key"])
+        with open(self.key_path()) as f:
+            self.assertEqual(f.read(), "the-servers-key")
+        self.assertEqual(oct(os.stat(self.key_path()).st_mode & 0o777), "0o600")
+
+    def test_key_from_a_file(self):
+        src = os.path.join(self.tmp.name, "api_key")
+        with open(src, "w") as f:
+            f.write("from-file\n")
+        self.run_remote("192.168.1.50", answers=[src])
+        with open(self.key_path()) as f:
+            self.assertEqual(f.read(), "from-file")
+
+    def test_asks_before_replacing_a_key(self):
+        installer.write_key("old-key")
+        self.run_remote("192.168.1.50", answers=["new-key", "n"])
+        with open(self.key_path()) as f:
+            self.assertEqual(f.read(), "old-key")
+        self.run_remote("192.168.1.50", answers=["new-key", "y"])
+        with open(self.key_path()) as f:
+            self.assertEqual(f.read(), "new-key")
+
+    def test_yes_never_invents_a_key(self):
+        out = self.run_remote("192.168.1.50", yes=True)
+        self.assertFalse(os.path.exists(self.key_path()))
+        self.assertIn("deploy/api_key", out)
+
+    def test_report_follows_the_probe(self):
+        self.run_remote("192.168.1.50", answers=["k"], codes={})
+        self.assertFalse(install.REPORT[-1][1])
+
+
+class Server(unittest.TestCase):
+    """The server side: python -m backends.containers setup --server --allow <client>."""
+
+    def setUp(self):
+        from backends.containers import setup
+
+        self.setup = setup
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        shutil.copy(os.path.join(ROOT, "backends", "containers", "deploy", ".env.example"), self.tmp.name)
+        p = mock.patch.object(setup, "DEPLOY", self.tmp.name)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def run_server(self, allow):
+        with mock.patch.object(self.setup.images, "image_for_host", return_value=("cuda13", None)), \
+             contextlib.redirect_stdout(io.StringIO()) as out:
+            done = self.setup.setup_server(self.setup.Asker(yes=True), allow)
+        return done, out.getvalue()
+
+    def test_firewall_rules_admit_one_client(self):
+        rules = self.setup.firewall_rules("192.168.1.20")
+        self.assertIn("sudo firewall-cmd --permanent --add-rich-rule='rule family=ipv4 source address=192.168.1.20 "
+                      "port port=8080-8082 protocol=tcp accept'", rules["firewalld"])
+        self.assertTrue(any("port=8899" in r for r in rules["firewalld"]))
+        self.assertEqual(rules["firewalld"][-1], "sudo firewall-cmd --reload")
+        self.assertIn("sudo ufw allow from 192.168.1.20 to any port 8080:8082 proto tcp", rules["ufw"])
+        self.assertIn("sudo ufw allow from 192.168.1.20 to any port 8899 proto tcp", rules["ufw"])
+        self.assertIn("ip saddr 192.168.1.20", rules["nftables"][0])
+
+    def test_ipv6_client(self):
+        rules = self.setup.firewall_rules("fd00::20")
+        self.assertIn("family=ipv6", rules["firewalld"][0])
+        self.assertIn("ip6 saddr fd00::20", rules["nftables"][0])
+
+    def test_prints_never_runs(self):
+        with mock.patch.object(self.setup.subprocess, "run") as run, \
+             mock.patch.object(self.setup.subprocess, "call") as call:
+            done, out = self.run_server("192.168.1.20")
+        self.assertTrue(done)
+        run.assert_not_called()
+        call.assert_not_called()
+        self.assertIn("sudo firewall-cmd", out)
+        self.assertIn("podman compose -f compose.yaml -f compose.cuda.yaml up -d", out)
+        self.assertIn("docker compose -f compose.yaml -f compose.cuda.docker.yaml up -d", out)
+
+    def test_files_it_makes(self):
+        self.run_server("192.168.1.20")
+        key = os.path.join(self.tmp.name, "api_key")
+        token = os.path.join(self.tmp.name, "hf_token")
+        self.assertEqual(oct(os.stat(key).st_mode & 0o777), "0o600")
+        self.assertEqual(os.path.getsize(token), 0)          # compose needs the file; empty means no token
+        self.assertTrue(os.path.exists(os.path.join(self.tmp.name, ".env")))
+
+    def test_a_token_already_there_is_kept(self):
+        with open(os.path.join(self.tmp.name, "hf_token"), "w") as f:
+            f.write("hf_mine")
+        self.run_server(None)
+        with open(os.path.join(self.tmp.name, "hf_token")) as f:
+            self.assertEqual(f.read(), "hf_mine")
+
+    def test_allow_must_be_an_address(self):
+        done, out = self.run_server("not-an-ip")
+        self.assertFalse(done)
+
+    def test_compose_files_per_gpu(self):
+        for backend, podman, docker in (("cpu", [], []), ("cuda", ["compose.cuda.yaml"], ["compose.cuda.docker.yaml"]),
+                                        ("rocm", ["compose.rocm.yaml"], ["compose.rocm.yaml"]),
+                                        ("vulkan", ["compose.vulkan.yaml"], ["compose.vulkan.yaml"])):
+            p, d = self.setup.compose_files(backend)
+            self.assertEqual(p[3:], podman)
+            self.assertEqual(d[3:], docker)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,39 @@
+# NVIDIA, with Podman: the GPU by CDI. Needs the CDI spec on the server
+# (nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml). With Docker,
+# use compose.cuda.docker.yaml instead.
+#   podman compose -f compose.yaml -f compose.cuda.yaml up -d
+# A driver older than CUDA 13 (nvidia-smi's header): in .env, set
+# LLAMA_TAG=server-cuda, LLAMA_DIGEST to its pin, LLAMA_BUILD=cuda and
+# TORCH_INDEX=https://download.pytorch.org/whl/cu126.
+services:
+  llama:
+    build:
+      args:
+        BACKEND: ${LLAMA_TAG:-server-cuda13}
+        BASE_DIGEST: ${LLAMA_DIGEST:-sha256:dfe42bda81c6bd53df864dfcf65e2423e9703f9991c238cfa7aaa893063e2977}
+    image: localhost/luna-deploy-llama:${LLAMA_BUILD:-cuda13}
+    devices:
+      - nvidia.com/gpu=all
+    security_opt:
+      - label=disable
+  rerank:
+    build:
+      args:
+        BACKEND: ${LLAMA_TAG:-server-cuda13}
+        BASE_DIGEST: ${LLAMA_DIGEST:-sha256:dfe42bda81c6bd53df864dfcf65e2423e9703f9991c238cfa7aaa893063e2977}
+    image: localhost/luna-deploy-llama:${LLAMA_BUILD:-cuda13}
+    devices:
+      - nvidia.com/gpu=all
+    security_opt:
+      - label=disable
+  tts:
+    build:
+      args:
+        TORCH_INDEX: ${TORCH_INDEX:-https://download.pytorch.org/whl/cu130}
+    image: localhost/luna-deploy-tts:${TTS_BUILD:-cuda13}
+    environment:
+      KOKORO_DEVICE: cuda
+    devices:
+      - nvidia.com/gpu=all
+    security_opt:
+      - label=disable
