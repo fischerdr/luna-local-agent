@@ -91,7 +91,7 @@ fi
 
 # ask GROUP-DESCRIPTION: yes when --outside, else a y/N question (default no)
 ask() {
-    [ "$OUTSIDE" = 1 ] && return 0
+    if [ "$OUTSIDE" = 1 ]; then echo "  $1 yes (--outside)"; return 0; fi
     local yn
     read -r -p "  $1 [y/N] " yn || yn=n
     case "$yn" in [Yy]*) return 0 ;; *) return 1 ;; esac
@@ -138,7 +138,24 @@ if [ "$have_podman" = 1 ]; then
 fi
 
 [ "${#data[@]}" -gt 0 ] && git checkout -q HEAD -- config.json agent
-git clean -Xdfq
+# On NFS a file a running program still has open (an editor's Python tools
+# in .venv, say) stays behind as .nfs* until that program lets go: say
+# who, and carry on - the install recreates around it.
+if ! git clean -Xdfq 2>/dev/null; then
+    mapfile -t left < <(git clean -Xdn | sed 's/^Would remove //')
+    others=$(find "${left[@]}" -type f ! -name '.nfs*' 2>/dev/null | head -5)
+    if [ -n "$others" ]; then
+        echo "Couldn't remove: $others" >&2
+        exit 1
+    fi
+    echo "  still held open by running programs (NFS keeps them until they exit):"
+    find "${left[@]}" -type f -name '.nfs*' 2>/dev/null | while read -r f; do
+        for pid in $(fuser "$f" 2>/dev/null); do
+            echo "    $(ps -o args= -p "$pid" | cut -c1-120)"
+        done
+    done | sort -u
+    echo "  (an editor's Python tools? restart them once the install has made .venv again)"
+fi
 echo "The checkout is at zero.${gone_outside:+ Outside it, gone: ${gone_outside[*]}.}"
 
 [ "$INSTALL" = 1 ] || { echo "Now: ./installer/install.sh   then: tests/zero/check.sh"; exit 0; }
