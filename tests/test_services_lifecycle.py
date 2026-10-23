@@ -282,6 +282,24 @@ class Reset(unittest.TestCase):
             self.assertNotIn(name, flat)
 
 
+class Status(unittest.TestCase):
+    def lines(self, s, voice):
+        with mock.patch.object(lifecycle, "voice_state", return_value=voice):
+            return dict((ln.split()[0], (good, ln)) for good, ln in
+                        lifecycle.status(s, found={}, get=mock.Mock(side_effect=requests.ConnectionError())))
+
+    def test_a_role_switched_off_is_fine(self):
+        out = self.lines(base_settings(RERANK="off"), {"container": "luna-tts"})
+        self.assertEqual(out["rerank"][0], True)
+        self.assertIn("RERANK=off", out["rerank"][1])
+        self.assertEqual(out["chat"][0], False)                  # not created, and should be
+
+    def test_a_host_voice_is_fine(self):
+        out = self.lines(base_settings(), {"mode": "managed"})
+        self.assertEqual(out["tts"][0], True)
+        self.assertEqual(self.lines(base_settings(), {"container": "luna-tts"})["tts"][0], False)
+
+
 class Podman(unittest.TestCase):
     def test_missing_podman_says_how_to_get_it(self):
         with mock.patch.object(lifecycle.shutil, "which", return_value=None):

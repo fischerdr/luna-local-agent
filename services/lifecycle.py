@@ -361,7 +361,13 @@ def status(s, found=None, get=requests.get):
         c = found.get(name)
         url = f"http://127.0.0.1:{settings.port(role, s)}"
         if not c:
-            lines.append((False, f"{role:7} {name}: not created"))
+            switch = {"embed": "EMBED", "rerank": "RERANK"}.get(role)
+            if switch and (s.get(switch) or "").lower() == "off":
+                lines.append((True, f"{role:7} {name}: off ({switch}=off)"))
+            elif role == "tts" and voice_state().get("container") != CONTAINER["tts"]:
+                lines.append((True, f"{role:7} {name}: not used - her voice isn't a container here"))
+            else:
+                lines.append((False, f"{role:7} {name}: not created"))
             continue
         ours = "luna.config-hash" in c["labels"]
         try:

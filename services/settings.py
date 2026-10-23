@@ -193,7 +193,7 @@ def resolve(role, s, volume_find=None):
     hf_key, file_key, match_key, switch_key = _ROLE_KEYS[role]
     switch = (s[switch_key] or "auto").lower() if switch_key else "on"
     if switch == "off":
-        return None, f"off ({switch_key}=off in llama/server.env)"
+        return None, f"off ({switch_key}=off in llama/server.env or server.local.env)"
 
     m, why = Model(), ""
     if s[hf_key]:

@@ -59,10 +59,19 @@ check "chat answers" python3 -c \
 dim=$(curl -s --max-time 60 "${auth[@]}" http://127.0.0.1:8081/v1/embeddings -d '{"input":"hello"}' |
     python3 -c 'import json,sys; print(len(json.load(sys.stdin)["data"][0]["embedding"]))' 2>/dev/null)
 check "embeddings (${dim:-none} wide)" test "${dim:-0}" -gt 0
-best=$(curl -s --max-time 60 "${auth[@]}" http://127.0.0.1:8082/v1/rerank \
-    -d '{"query":"what pet does the user have","documents":["The user likes jazz.","The user has a cat named Miso."]}' |
-    python3 -c 'import json,sys; r=json.load(sys.stdin)["results"]; print(max(r, key=lambda x: x["relevance_score"])["index"])' 2>/dev/null)
-check "the reranker puts the answer first" test "${best:-}" = 1
+# The reranker may be off on purpose (bench turns it off when the CPU is
+# too slow for it and the GPU has no room): then it's expected to be away.
+rerank=$("$PY" -c 'from services import settings; print(settings.load()["RERANK"].lower() or "auto")' 2>/dev/null)
+if [ "$rerank" = off ]; then
+    ok "the reranker is off (RERANK=off), so recall keeps the embedding order"
+    reranks=False
+else
+    best=$(curl -s --max-time 60 "${auth[@]}" http://127.0.0.1:8082/v1/rerank \
+        -d '{"query":"what pet does the user have","documents":["The user likes jazz.","The user has a cat named Miso."]}' |
+        python3 -c 'import json,sys; r=json.load(sys.stdin)["results"]; print(max(r, key=lambda x: x["relevance_score"])["index"])' 2>/dev/null)
+    check "the reranker puts the answer first" test "${best:-}" = 1
+    reranks=True
+fi
 wav=$(curl -s --max-time 120 -X POST http://127.0.0.1:8899/tts -H "Content-Type: application/json" \
     -d '{"text":"Hello, I am Luna.","voice":"af_bella"}' | head -c 4)
 check "her voice speaks (a WAV)" test "$wav" = RIFF
@@ -78,8 +87,8 @@ print("PROBE", config.LLM_BACKEND, embedmem.available(), embedmem.reranker_avail
 EOF
 )
 line=$(echo "$probe" | grep '^PROBE')
-check "picks llama.cpp, recalls and reranks by meaning, speaks (${line:-$(tail -1 <<< "$probe")})" \
-    test "$line" = "PROBE llama True True The user has a cat named Miso. True"
+check "picks llama.cpp, recalls by meaning$([ "$reranks" = True ] && echo ' and reranks'), speaks (${line:-$(tail -1 <<< "$probe")})" \
+    test "$line" = "PROBE llama True $reranks The user has a cat named Miso. True"
 
 echo "Room"
 if command -v nvidia-smi >/dev/null 2>&1; then
@@ -89,8 +98,9 @@ if command -v nvidia-smi >/dev/null 2>&1; then
 fi
 log="${XDG_CACHE_HOME:-$HOME/.cache}/ai-voice/ai-voice.log"
 if [ -f "$log" ]; then
-    n=$(grep -ciE 'embed.*(timed out|timeout)' "$log")
-    check "no embed timeouts in $log ($n)" test "$n" = 0
+    # Since her last start only: older runs had other settings.
+    n=$(awk '/ ai-voice  started \| /{n=0} tolower($0) ~ /embed.*(timed out|timeout)/{n++} END{print n+0}' "$log")
+    check "no embed timeouts since she last started ($n, in $log)" test "$n" = 0
 fi
 
 echo
