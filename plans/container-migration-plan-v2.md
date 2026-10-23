@@ -84,6 +84,9 @@ git switch -c feat/containers 6d1ef9f
     `python3`, go on with that Python instead of asking for sudo; the voice
     and model server default to containers (approved 2026-10-22, widening
     Luna's host Python range per section 14).
+  - `main.py`: one line only, the stray `import config` in `/camera` that
+    made `config` local to all of `handle_input` and crashed `/settings`
+    (a bug already on main; approved 2026-10-23).
   - Docs, additive only, exactly as listed in section 11: `README.md`,
     `docs/README.md`, `docs/_Sidebar.md`, `docs/install.md`,
     `docs/configuration.md`, `docs/development.md`, `docs/knowledge.md`,
