@@ -50,15 +50,15 @@ the cap once faster-whisper stops passing the argument.
 **What happens.** Typing `/settings` raises an unhandled exception in the event loop:
 
 ```
-File "main.py", line 580, in handle_input
+File "main.py", line 584, in handle_input
     if not config.MONITOR_ENABLED:
 UnboundLocalError: cannot access local variable 'config' where it is not associated with a value
 ```
 
 **Why.** `handle_input()` (`main.py:349`) has `import config` inside its `/camera`
-branch (`main.py:1500`, from 2026-10-09). An import inside a function makes the name
+branch (`main.py:1504`, from 2026-10-09). An import inside a function makes the name
 local to the **whole** function, so every earlier use of `config` in `handle_input`
-fails, at least until `/camera` has run once. `/settings` (`main.py:580`, added in
+fails, at least until `/camera` has run once. `/settings` (`main.py:584`, added in
 `30fe513` on 2026-10-21) is the first command to hit it. `config` is already
 imported at the top of `main.py` (line 11).
 
