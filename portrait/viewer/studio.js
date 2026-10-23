@@ -42,7 +42,7 @@ export function createStudio({ vrm, moves, GESTURES, gesture, THREE, orbit, came
 
   // -- what's being made -----------------------------------------------------
   const fresh = () => ({ name: '', about: '', keywords: '', dur: 3, fade: [0.4, 0.5],
-                         keys: [], expr: {}, private: false, lewd: false, full: false, idle: false,
+                         keys: [], expr: {}, private: false, lewd: false, full: false, idle: [],
                          touch: [], moods: [], sound: { name: '', from: '', len: '' }, emote: [],
                          tail: 'none', tailLevel: 0.8, chain: [], extra: {} });
   let A = fresh();
@@ -68,7 +68,8 @@ export function createStudio({ vrm, moves, GESTURES, gesture, THREE, orbit, came
   const tabsRow = el('div', { className: 'tabs' });
   const pages = {}, tabBtn = {};
   let tabNow = 'pose';
-  let ph, phDrag, phHot, phFrame;                     // the prop's handles (see below)
+  let ph, phDrag, phHot, phFrame;
+  let closed = false;                                 // "✕ close" picked: nothing open                     // the prop's handles (see below)
   function showTab(name) {
     if (!pages[name]) return;
     tabNow = name;
@@ -101,7 +102,11 @@ export function createStudio({ vrm, moves, GESTURES, gesture, THREE, orbit, came
   const zoom = (f, label) => btn(label, () => { if (orbit) orbit.zoom = Math.max(0.25, Math.min(4, orbit.zoom * f)); }, 'zoom');
   const openSel = loadSel();
   // blur after picking: a focused menu turns ← → into "open the next gesture"
-  openSel.onchange = () => { const v = openSel.value; openSel.blur(); if (v === '__new') newGesture(); else if (v) open(v); drawOpen(); };
+  openSel.onchange = () => {
+    const v = openSel.value; openSel.blur();
+    if (v === '__new') newGesture(); else if (v === '__close') closeGesture(); else if (v) open(v);
+    drawOpen();
+  };
   const now = el('div', { className: 'now' });         // what you're editing, and where you are in it
   const saveBtn = btn('save', () => saveIt(false), 'save it (over the file if it has one)');
   const head = el('div', { className: 'shead' },
@@ -205,12 +210,16 @@ export function createStudio({ vrm, moves, GESTURES, gesture, THREE, orbit, came
   const fadeOut = el('input', { type: 'number', step: 0.05, min: 0, value: 0.5, style: 'width:62px' });
   const flagBoxes = {};
   const flags = el('div', { className: 'chips' });
-  for (const [f, label] of [['private', '🔒 never from chat'], ['lewd', '🔥 lewd'], ['full', '🧍 full body only'], ['idle', 'idle (on her own)']]) {
+  for (const [f, label] of [['private', '🔒 never from chat'], ['lewd', '🔥 lewd'], ['full', '🧍 full body only']]) {
     flagBoxes[f] = el('input', { type: 'checkbox' });
     flags.append(el('label', {}, flagBoxes[f], ' ' + label));
   }
   const zoneBoxes = {}, zones = el('div', { className: 'chips' });
   for (const z of ZONES) { zoneBoxes[z] = el('input', { type: 'checkbox' }); zones.append(el('label', {}, zoneBoxes[z], ' ' + z)); }
+  // idle: she drifts into it on her own, in the moods ticked (all = any mood)
+  const IDLE_BANDS = ['grudge', 'cool', 'neutral', 'warm', 'loving', 'lewd'];
+  const idleBoxes = {}, idles = el('div', { className: 'chips' });
+  for (const b of IDLE_BANDS) { idleBoxes[b] = el('input', { type: 'checkbox' }); idles.append(el('label', {}, idleBoxes[b], ' ' + b)); }
   const bandBoxes = {}, bands = el('div', { className: 'chips' });
   for (const b of BANDS) { bandBoxes[b] = el('input', { type: 'checkbox' }); bands.append(el('label', {}, bandBoxes[b], ' ' + b)); }
   const moodIn = el('input', { type: 'text', placeholder: 'or mood names: flirty, heated…', style: 'width:200px' });
@@ -224,6 +233,7 @@ export function createStudio({ vrm, moves, GESTURES, gesture, THREE, orbit, came
   pages.details.append(
     row('name', nameIn), row('about', aboutIn), row('keywords', kwIn), row('fade', fadeIn, fadeOut, el('span', { className: 'dim', textContent: ' in / out' })),
     el('div', { className: 'dim', textContent: 'flags' }), flags,
+    el('div', { className: 'dim', textContent: 'idle: she does it on her own in these moods (none: never)' }), idles,
     el('div', { className: 'dim', textContent: 'touches that play it' }), zones,
     el('div', { className: 'dim', textContent: 'in these moods (none ticked: any mood)' }), bands, row('', moodIn),
     row('sound', soundSel), row('', soundFrom, soundLen),
@@ -295,12 +305,23 @@ export function createStudio({ vrm, moves, GESTURES, gesture, THREE, orbit, came
     propNone, propBox,
     el('div', { className: 'dim', textContent: 'on her: drag an arrow to move it, a ring to turn it (red x, green y, blue z, like the sliders) · or the sliders: x y z move it in the hand (metres), turn spins it, size scales it' }),
     el('div', { className: 'row' }, savePlace,
-       btn('put it away', () => { propSel.value = ''; pickProp(); })),
+       btn('put it away', () => putAway())),
     el('h4', { textContent: 'this gesture (saved with it)' }),
     el('div', { className: 'row' }, el('label', {}, propUses, ' made with it (in her hand when it\'s opened)')),
     row('at', propAt, el('span', { className: 'dim', textContent: ' s, when it appears or goes ' }), btn('now', () => { propAt.value = st.t; propAt.onchange(); }, 'the time on the timeline')),
     el('div', { className: 'row' }, el('label', {}, propHold, ' hold her last pose while she carries it')));
-  propSel.onchange = () => pickProp();
+  // picking "nothing in her hand" is you saying so: away it goes, even one the studio
+  // didn't get out itself (a mug left in her hand by the coffee routine or a refresh)
+  propSel.onchange = () => (propSel.value ? pickProp() : putAway());
+  function putAway() {
+    const pr = P();
+    propSel.value = '';
+    let any = false;
+    if (pr) for (const n of pr.names()) if (pr.held(n)) { pr.hide(n); any = true; }
+    if (any && !st.on) moves.hold?.(null);              // and let go of the "carrying it" pose
+    pp.shown = '';
+    pickProp();
+  }
   handSel.onchange = () => { if (pp.name) { remember(false); P().set(pp.name, { hand: handSel.value }); placed(true); } };
   async function fillProps() {
     const pr = P();
@@ -364,7 +385,7 @@ export function createStudio({ vrm, moves, GESTURES, gesture, THREE, orbit, came
     stopPlay();
     st.on = false; onOff.textContent = 'start posing'; posingDot.textContent = '';
     st.live?.stop(); st.live = null;
-    drawNow();
+    drawNow(); moveGizmo();
   }
   // the key at time t (made if asked)
   function keyAt(t, make) {
@@ -517,7 +538,8 @@ export function createStudio({ vrm, moves, GESTURES, gesture, THREE, orbit, came
       let top = vrm.scene; while (top.parent) top = top.parent;   // the scene itself: the rings are placed in world space
       top.add(gizmo);
     }
-    gizmo.visible = tabNow === 'pose' && !!vrm.humanoid.getNormalizedBoneNode(st.bone) && showAxes.checked && !win.classList.contains('tucked');
+    // only while posing: otherwise a click meant as a touch lands on a ring
+    gizmo.visible = st.on && tabNow === 'pose' && !!vrm.humanoid.getNormalizedBoneNode(st.bone) && showAxes.checked && !win.classList.contains('tucked');
     propHandles();
   }
   new MutationObserver(() => moveGizmo()).observe(win, { attributes: true, attributeFilter: ['class'] });   // tucked away: no rings
@@ -557,9 +579,7 @@ export function createStudio({ vrm, moves, GESTURES, gesture, THREE, orbit, came
         dragging.slide = { x: e.clientX, y: e.clientY, tx: tx / len, ty: ty / len, px: Math.max(30, Math.hypot(s0.x - c.x, s0.y - c.y)), sgn };
       }
       canvas.setPointerCapture?.(e.pointerId);
-      lastMark = 0; dragStep = false;
-      remember();                                          // the drag is one undo step
-      dragStep = true;
+      lastMark = 0; dragStep = false;                      // the drag is one undo step, from its first real move
     }, true);
     addEventListener('pointermove', e => {
       if (dragging) {
@@ -844,6 +864,13 @@ export function createStudio({ vrm, moves, GESTURES, gesture, THREE, orbit, came
   // the line at the top: what you're editing and where you are in it
   function drawNow() {
     if (!now) return;
+    const unsaved = dirty && (A.keys.length > 0 || A.chain.length > 0);   // nothing in it: nothing to save
+    if (closed && !A.keys.length && !A.chain.length) {
+      now.textContent = 'nothing open · pick a gesture to edit, or ✚ new gesture';
+      now.classList.remove('dirty'); saveBtn.classList.remove('unsaved');
+      return;
+    }
+    closed = false;
     const name = A.name || 'a new gesture';
     let text;
     if (A.chain.length && !A.keys.length) text = `editing ${name} · a chain of ${A.chain.length}`;
@@ -853,9 +880,9 @@ export function createStudio({ vrm, moves, GESTURES, gesture, THREE, orbit, came
         : i >= 0 ? `on key ${i + 1} of ${A.keys.length}` : `between keys (${A.keys.length})`;
       text = `editing ${name} · ${st.t.toFixed(2)} s of ${A.dur} · ${where}`;
     }
-    now.textContent = text + (dirty ? ' · not saved' : '');
-    now.classList.toggle('dirty', dirty);
-    saveBtn.classList.toggle('unsaved', dirty);
+    now.textContent = text + (unsaved ? ' · not saved' : '');
+    now.classList.toggle('dirty', unsaved);
+    saveBtn.classList.toggle('unsaved', unsaved);
   }
   {
     let drag = null;
@@ -990,7 +1017,7 @@ export function createStudio({ vrm, moves, GESTURES, gesture, THREE, orbit, came
       const cur = s.value;
       s.textContent = '';
       s.add(new Option(s === linkSel ? 'a gesture…' : 'pick one to edit…', ''));
-      if (s !== linkSel) s.add(new Option('✚ new gesture', '__new'));
+      if (s !== linkSel) { s.add(new Option('✚ new gesture', '__new')); s.add(new Option('✕ close (nothing open)', '__close')); }
       for (const n of names) if (s !== linkSel || !GESTURES[n].chain) s.add(new Option(n + (GESTURES[n].chain ? ' ⛓' : ''), n));
       s.value = cur;
     }
@@ -998,6 +1025,14 @@ export function createStudio({ vrm, moves, GESTURES, gesture, THREE, orbit, came
   }
   // the open menu shows what you're editing
   function drawOpen() { const s = loadSel.el; if (s) s.value = A.name && GESTURES[A.name] ? A.name : ''; }
+  // nothing open: she's let go, the studio's prop is put away, the menu says so
+  function closeGesture() {
+    if (dirty && !confirm(`Close ${A.name || 'this gesture'}? What isn't saved is lost.`)) return;
+    stop(); remember(false); A = fresh(); refreshAll(); dirty = false; closed = true;
+    putAway();
+    drawNow(); drawOpen(); showTab('pose');
+    say('nothing open', 3000);
+  }
   function newGesture() {
     if (dirty && !confirm('Start a new gesture? What isn\'t saved is lost.')) return;
     stop(); remember(); A = fresh(); refreshAll(); dirty = false; drawNow(); showTab('pose');
@@ -1008,6 +1043,7 @@ export function createStudio({ vrm, moves, GESTURES, gesture, THREE, orbit, came
     A.name = nameIn.value.trim(); A.about = aboutIn.value.trim(); A.keywords = kwIn.value;
     A.fade = [Math.max(0, +fadeIn.value || 0), Math.max(0, +fadeOut.value || 0)];
     for (const f of Object.keys(flagBoxes)) A[f] = flagBoxes[f].checked;
+    A.idle = IDLE_BANDS.filter(b => idleBoxes[b].checked);
     A.touch = ZONES.filter(z => zoneBoxes[z].checked);
     A.moods = [...BANDS.filter(b => bandBoxes[b].checked), ...moodIn.value.split(',').map(s => s.trim()).filter(Boolean)];
     A.sound = { name: soundSel.value, from: soundFrom.value.trim(), len: soundLen.value };
@@ -1017,6 +1053,8 @@ export function createStudio({ vrm, moves, GESTURES, gesture, THREE, orbit, came
     nameIn.value = A.name; aboutIn.value = A.about; kwIn.value = A.keywords;
     fadeIn.value = A.fade[0]; fadeOut.value = A.fade[1];
     for (const f of Object.keys(flagBoxes)) flagBoxes[f].checked = !!A[f];
+    if (!Array.isArray(A.idle)) A.idle = A.idle ? IDLE_BANDS.slice() : [];   // a draft from before
+    for (const b of IDLE_BANDS) idleBoxes[b].checked = A.idle.includes(b);
     for (const z of ZONES) zoneBoxes[z].checked = A.touch.includes(z);
     for (const b of BANDS) bandBoxes[b].checked = A.moods.includes(b);
     moodIn.value = A.moods.filter(m => !BANDS.includes(m)).join(', ');
@@ -1034,7 +1072,8 @@ export function createStudio({ vrm, moves, GESTURES, gesture, THREE, orbit, came
     if (A.about) g.about = A.about;
     const kw = A.keywords.split(',').map(s => s.trim()).filter(Boolean);
     if (kw.length) g.keywords = kw;
-    for (const f of ['private', 'lewd', 'full', 'idle']) if (A[f]) g[f] = true;
+    for (const f of ['private', 'lewd', 'full']) if (A[f]) g[f] = true;
+    if (A.idle.length) g.idle = A.idle.length === IDLE_BANDS.length ? true : A.idle.slice();
     if (A.touch.length) g.touch = A.touch;
     if (A.moods.length) g.moods = A.moods;
     if (A.sound.name) {
@@ -1065,13 +1104,14 @@ export function createStudio({ vrm, moves, GESTURES, gesture, THREE, orbit, came
     A = fresh();
     A.name = n; A.about = g.about || ''; A.keywords = (g.keywords || []).join(', ');
     A.fade = (g.fade || [0.4, 0.5]).slice();
-    for (const f of ['private', 'lewd', 'full', 'idle']) A[f] = !!g[f];
+    for (const f of ['private', 'lewd', 'full']) A[f] = !!g[f];
+    A.idle = g.idle === true ? IDLE_BANDS.slice() : Array.isArray(g.idle) ? IDLE_BANDS.filter(b => g.idle.includes(b)) : [];
     A.touch = (g.touch || []).slice(); A.moods = (g.moods || []).slice();
     const s = typeof g.sound === 'string' ? { name: g.sound } : g.sound || {};
     A.sound = { name: s.name || '', from: s.from ?? '', len: s.len ?? '' };
     A.emote = [].concat(g.emote || []).map(e => (typeof e === 'string' ? { name: e, at: 0 } : { name: e.name, at: +e.at || 0 }));
     if (g.tail_up) { A.tail = 'tail_up'; A.tailLevel = g.tail_up; } else if (g.wag) { A.tail = 'wag'; A.tailLevel = g.wag; }
-    for (const k of ['then', 'left', 'osc', 'add', 'prop', 'prop_at', 'hold']) if (g[k] != null) A.extra[k] = g[k];
+    for (const k of ['then', 'left', 'osc', 'add', 'prop', 'prop_at', 'hold', 'lights']) if (g[k] != null) A.extra[k] = g[k];
     // made with a prop: in her hand straight away (the menu isn't filled yet, so say which first)
     if (g.prop && propSel) { pp.name = propSel.value = g.prop; fillProps().then(() => { propSel.value = g.prop; pickProp(); }); }
     else if (pp.shown && propSel) { propSel.value = ''; pickProp(); }          // not made with one: put away what the studio got out
@@ -1141,7 +1181,8 @@ export function createStudio({ vrm, moves, GESTURES, gesture, THREE, orbit, came
       showTab(typeof d.tab === 'string' ? d.tab : 'pose');
       dirty = !!d.dirty; drawOpen(); drawNow();
       if (d.on) start();
-      if (A.extra.prop && propSel) { pp.name = A.extra.prop; fillProps().then(() => { propSel.value = A.extra.prop; pickProp(); }); }
+      // (open() above already brought out a reopened gesture's prop)
+      if (A.extra.prop && propSel && !P()?.held(A.extra.prop)) { pp.name = A.extra.prop; fillProps().then(() => { propSel.value = A.extra.prop; pickProp(); }); }
       if (d.prop) {                                     // where you'd dragged it, still not saved
         const { name, ...where } = d.prop;
         Promise.resolve(P()?.ready).then(() => { if (P()?.PROPS[name]) { P().set(name, where); if (pp.name === name) drawProp(); placed(true); } });

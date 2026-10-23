@@ -68,9 +68,20 @@ open portrait straight away:
 - **a colour**: pick one with the swatch.
 - **a picture**: any `.png`, `.jpg` or `.webp` you put in
   `portrait/backgrounds/`. It fills the window and is cropped to fit.
+- **seasonal**: a picture from `portrait/backgrounds/seasonal/` picked by the
+  date and the time of day, changing on its own with a slow fade. A holiday
+  wins on its days (Halloween Oct 24-31, Christmas Dec 15-26, New Year's Eve
+  and Day, Valentine's Feb 13-14), otherwise the season; `-night` pictures
+  take over after dark (sunrise and sunset are set for about 52°N, so a bit
+  early or late far from there). South of the equator the seasons flip; the
+  page guesses which side you're on from your time zone. Missing pictures fall back: night to day, a
+  holiday to its season, nothing to her gradient. The folder's README lists
+  the names. The debug panel's background menu previews any of them, and
+  `&bgdate=2026-12-24T21:00` on the address shows what a date would pick.
 
-It's `portrait.background` in config.json (`""`, `"none"`, `"#1a1025"` or a
-file name). It only ever changes when you change it. The OBS page
+It's `portrait.background` in config.json (`""`, `"none"`, `"seasonal"`,
+`"#1a1025"` or a file name). Apart from seasonal, it only ever changes when
+you change it. The OBS page
 (`?bg=transparent`) stays see-through and the hologram fans stay black
 whatever it's set to.
 
@@ -131,7 +142,11 @@ moods: ['warm', 'loving'],   // bands, rows (lewd, grudge) or mood names; leave 
 ```
 
 Those gestures are added to whatever the zone already lists, and one is
-picked at random. A gesture with a left-handed copy (`left: true`) plays
+picked at random. They join for the mood the zone answers from: in heated,
+a chest touch answers from `lewd` (heated is in the lewd row), so a gesture
+tagged `loving` stays out even though heated is loving-warm too. A zone
+with no entry for her mood answers from the most specific mood a tagged
+gesture has. A gesture with a left-handed copy (`left: true`) plays
 on the side you touched. The leg gestures work this way:
 
 | Gesture | What she does | Moods |
@@ -375,18 +390,25 @@ Luna's robot model has LED paint at her joints, a light on each side of her
 chest, one in her belt and one low on her front. With light strips on, they
 glow and react:
 
-- **at rest** they breathe, slowly.
-- **listening**: a little brighter, her ears most of all.
+- **at rest** they're dark: they only light up for something, then go out.
+- **listening**: her ears glow.
 - **thinking**: a sweep runs down her, ears to tail.
 - **talking**: they pulse with her voice.
 - **a tool fails**: they flicker.
 - **you click a part of her**: that part lights up.
+- **a gesture with `lights`** (touch_self, cup_breasts, masturbate, climax): they throb
+  with it, faster and brighter as it builds, then fade (see `lights` in
+  [Gestures](gestures.md)).
 - **her mood** picks the colour (unless you pick one): her own pink when
   she's fine, blue when she's low, red when she's cross, violet when she's
   tired.
 
 Switch them with `/lights` (or `/lights on`, `/lights off`), the **light
 strips** row in the tools pane, or `/settings`, Portrait. All of it is live.
+To try them without Luna running, open the viewer with `&lights=1` on the
+address, or use the debug panel's **light strips** buttons: *light tour* (every reaction in turn, with a caption saying which; press again to stop), *lights on/off*,
+*throb* (a 10 s build and release, dark between beats) and *flicker*. Her state buttons (talk,
+listen, think) and moods drive them too.
 
 | Setting | What it does |
 |---|---|
@@ -441,7 +463,7 @@ and does small things on her own:
 | Tail wag | With the happy ones, and when her mood warms up |
 | Blow a kiss, shy | Affectionate ones, for people who role-play with her: fingers to her lips then blown your way; hands together at her chest, looking away, then a peek. Only in your own conversations: never from stream chat, and never offered to her in a chat room's turn |
 | Cry | She writes `[cry]`, or she stays deeply sad for several seconds: tears well on her lower lids, streak down her cheeks with drops running along them, and the cry gesture adds a lowered head and shoulders hitching with sobs. They dry slowly. `"vrm": {"tears": {"left": [u, v], "right": [u, v], "length": 0.3}}` in luna.json moves them for a non-VRoid face |
-| Morning coffee | Once a day in the morning, the first time you're around, she picks up her mug, takes a sip every few minutes (each one wakes her up a little) and puts it down when it's finished. `/coffee` pours one now, `/coffee off` puts it down. Settings: `portrait.coffee.*` |
+| Morning coffee | Once a day in the morning, the first time you're around, she picks up her mug, takes a sip every few minutes (each one wakes her up a little) and puts it down when it's finished. Not in the lewd row: the morning cup waits until she's out of it, and goes down if she gets there mid-cup. `/coffee` pours one now (that one stays), `/coffee off` puts it down. Settings: `portrait.coffee.*` |
 | Blush | Rises with a hug, a kiss or shy, when her warmth jumps (flustered, then fading over a few seconds), and a little while warmth stays high |
 
 ### The pose studio: making gestures without code
@@ -466,7 +488,7 @@ into the dock at the bottom left (–); they remember where they were.
 **First steps: make a new one**: *✚ new gesture* in the same menu, pose her,
 move along the timeline, pose her again, play, *save* (it asks for a name).
 
-**At the top, always:** the gesture menu, *save*, *save as…*, undo ↶ / redo ↷,
+**At the top, always:** the gesture menu (*✕ close* in it lets go of the gesture and puts any prop away), *save*, *save as…*, undo ↶ / redo ↷,
 a line saying what you're editing and where you are ("editing coffee_pickup ·
 1.60 s of 2.2 · on key 3 of 4", with *not saved* when it's changed), the
 camera (*front*, *¾*, *side*, *back*, zoom), the timeline, *▶ play* and

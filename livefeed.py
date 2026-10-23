@@ -80,6 +80,7 @@ def emit(kind, **data):
 _GNAME = re.compile(r"^[a-z][a-z0-9_]{0,40}$")
 _BONE = re.compile(r"^\+?[A-Za-z][A-Za-z0-9]{0,40}$")
 _WORD = re.compile(r"^[A-Za-z0-9_\- ]{1,40}$")
+_IDLE_BANDS = {"grudge", "cool", "neutral", "warm", "loving", "lewd"}
 _ZONES = {"head", "nose", "mouth", "chest", "tummy", "groin", "legs", "neck", "arms", "back", "butt", "tail"}
 
 
@@ -145,9 +146,16 @@ def gesture_file(data):
         g["about"] = _text(data["about"])
     if data.get("keywords"):
         g["keywords"] = [_text(k, 60) for k in data["keywords"] if _text(k, 60)][:20]
-    for flag in ("private", "lewd", "full", "idle"):
+    for flag in ("private", "lewd", "full"):
         if data.get(flag):
             g[flag] = True
+    idle = data.get("idle")
+    if isinstance(idle, list):       # only in these mood bands
+        bands = [b for b in _words(idle, 6) if b in _IDLE_BANDS]
+        if bands:
+            g["idle"] = bands
+    elif idle:
+        g["idle"] = True
     if data.get("touch"):
         g["touch"] = [z for z in _words(data["touch"], 12) if z in _ZONES]
     if data.get("moods"):
@@ -188,6 +196,8 @@ def gesture_file(data):
         g["prop_at"] = _num(data["prop_at"], 0, 600)
     if data.get("hold") is True:
         g["hold"] = True
+    if isinstance(data.get("lights"), list):        # her light strips' throb: [[seconds, level], ...]
+        g["lights"] = [[_num(t, 0, 600), _num(v, 0, 2)] for t, v in data["lights"][:40]]
     if data.get("add"):
         g["add"] = {b: [_num(x, -7, 7) for x in v[:4]] for b, v in data["add"].items() if _BONE.match(str(b)) and isinstance(v, list)}
 
@@ -753,6 +763,17 @@ def gesture_mode_changed():
          chat=bool(getattr(config, "PORTRAIT_CHAT_GESTURES", True)))
 
 
+def _mood_list():
+    """Every mood, for the debug viewer's mood menu ([] if moods.json won't load)."""
+    try:
+        import mood
+
+        return mood.preview_list()
+    except Exception as e:
+        logbook.warn("monitor", "mood list for the portrait: %s", e)
+        return []
+
+
 def lights_config():
     """portrait.lights, as the page's lights.js takes it."""
     return {"enabled": bool(getattr(config, "PORTRAIT_LIGHTS_ENABLED", False)),
@@ -806,7 +827,9 @@ def portrait_config(preview=None):
             "sound_volume": float(getattr(config, "PORTRAIT_SOUND_VOLUME", 0.8)),
             "frame": str(getattr(config, "PORTRAIT_FRAME", "bust")),
             "lights": lights_config(),
+            "moods": _mood_list(),
             "background": str(getattr(config, "PORTRAIT_BACKGROUND", "") or ""),
+            "seasonal": config.seasonal_backgrounds(),
             "fan": dict(getattr(config, "PORTRAIT_FAN", {}) or {},
                         cast=bool(getattr(config, "PORTRAIT_FAN_CAST", False))),
             "clips": portrait_clips(),

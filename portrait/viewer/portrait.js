@@ -585,6 +585,19 @@ function propEvent(ev) {
   }
 }
 
+// What she can drift into right now: her mood's own idles, and the everyday
+// ones (gestures with idle: true, or idle: ['warm', 'lewd', ...] for only
+// those mood bands; clips marked "idle" join in). Legs-only moves wait for
+// full body (or a fan).
+function idleFits(v) { return v === true || (Array.isArray(v) && v.includes(moodBand())); }
+function idlePool() {
+  if (!moves) return { mood: [], everyday: [] };
+  const seen = n => !(GESTURES[n]?.full && framing !== 'full' && !fan?.status().connected);
+  const mood = mind.idle.filter(n => moves.names.includes(n) || moves.hasClip(n)).filter(seen);
+  const everyday = IDLE.filter(n => idleFits(GESTURES[n].idle)).concat(moves.clipsWhere('idle')).filter(seen);
+  return { mood, everyday };
+}
+
 function idleMoves(now, talking) {
   // Holding a pose: nothing else on her own, and back into it as soon as
   // anything that interrupted it has finished.
@@ -596,10 +609,10 @@ function idleMoves(now, talking) {
   if (moves.holding()) return;     // her hands are full (the mug): she sips instead
   if (mind.stage === 'idle' && now > idle.next) {
     let pick;
-    // half the time, something that suits her mood (agent/moods.json "idle")
-    const fits = mind.idle.filter(n => moves.names.includes(n) || moves.hasClip(n));
-    const seen = n => !(GESTURES[n]?.full && framing !== 'full' && !fan?.status().connected);   // legs-only moves wait for full body (or a fan)
-    const pool = (fits.length && Math.random() < 0.5 ? fits : IDLE.concat(moves.clipsWhere('idle'))).filter(seen);   // clips marked "idle" join in
+    // half the time, something that suits her mood (agent/moods.json "idle"),
+    // else one of the everyday idles that fits her mood band
+    const { mood: fits, everyday } = idlePool();
+    const pool = fits.length && (Math.random() < 0.5 || !everyday.length) ? fits : everyday;
     if (pool.length) {
       do { pick = pool[Math.floor(Math.random() * pool.length)]; } while (pick === idle.last && pool.length > 1);
       idle.last = pick;
@@ -940,7 +953,7 @@ function animate() {
     closeMouth(talking);
     updateEars(now, dt);   // after update: spring bones won't overwrite a twitch
     lights?.update(dt, { stage: mind.stage, energy: mind.energy, warmth: mind.warmth, row: mind.row,
-                         tame: mind.tame, talking });
+                         tame: mind.tame, talking, glow: Math.max(moves?.glow?.() || 0, throbTest(now)) });
   }
 
   if (holo && holo.isOn()) holo.render(scene, camera);
@@ -1273,8 +1286,57 @@ function updateBrows() {
   l.mesh.visible = l.mat.opacity > 0.01;
 }
 
+// the debug panel's "throb": a 10 s build and release, as a lewd gesture would drive them
+let throbAt = -99;
+function throbTest(now) {
+  const t = now - throbAt;
+  return t < 0 || t > 10 ? 0 : t < 7 ? 0.2 + t / 7 * 1.2 : 1.4 * (1 - (t - 7) / 3);
+}
+
+// The debug panel's "light tour": every way her light strips react, one
+// after another, with a caption saying what you're looking at. Press again to stop.
+let tourRun = 0, tourWas = null;
+async function lightTour(toggle) {
+  const run = ++tourRun;
+  const cap = document.getElementById('lighttour') || Object.assign(document.body.appendChild(document.createElement('div')), { id: 'lighttour' });
+  Object.assign(cap.style, { position: 'fixed', left: '50%', bottom: '18px', transform: 'translateX(-50%)', zIndex: 50,
+    background: 'rgba(20,10,30,0.85)', color: '#ffd6ef', padding: '8px 14px', borderRadius: '8px', font: '14px sans-serif', pointerEvents: 'none' });
+  const running = !!cap.dataset.on;
+  if (!running) tourWas = { on: !!lights?.enabled, e: mind.energy, w: mind.warmth, label: mind.label, row: mind.row };
+  const was = tourWas;
+  const done = () => { cap.remove(); handle({ t: 'stage', status: 'Idle' }); throbAt = -99;
+    handle({ t: 'mood', energy: was.e, warmth: was.w, label: was.label, row: was.row });
+    if (!was.on && lights?.enabled) toggle(); };
+  if (running) { tourRun++; done(); return; }                        // pressed while running: stop
+  cap.dataset.on = '1';
+  if (!lights?.enabled) toggle();
+  const wait = s => new Promise(ok => setTimeout(ok, s * 1000));
+  const step = async (text, s, fn) => { if (run !== tourRun) throw 0; cap.textContent = text; fn?.(); await wait(s); };
+  const mood = (energy, warmth, row = '') => handle({ t: 'mood', energy, warmth, row, label: row ? 'heated' : '' });
+  try {
+    await step('light tour · at rest: dark', 2.5, () => { mood(0, 0.2); handle({ t: 'stage', status: 'Idle' }); });
+    await step('listening: her ears glow', 3, () => handle({ t: 'stage', status: 'Listening...' }));
+    await step('thinking: a sweep runs down her', 4.5, () => handle({ t: 'stage', status: 'Thinking...' }));
+    await step('talking: they pulse with her voice', 3.5, () => { handle({ t: 'stage', status: 'Speaking...' }); fakeVoice(3.2); });
+    await step('back to idle: dark again', 2, () => handle({ t: 'stage', status: 'Idle' }));
+    for (const z of ['head', 'chest', 'arms', 'tummy', 'legs', 'tail'])
+      await step(`a touch lights that part: ${z}`, 1.3, () => lights?.touched(z));
+    await step('a tool failed: flicker', 2, () => lights?.failed());
+    for (const [name, e, w, row] of [['sad: blue', -0.8, -0.1], ['mad: red', 0.2, -0.9], ['tired: violet', -0.8, 0.5], ['lewd: hot pink', 0.3, 0.9, 'lewd']])
+      await step(`her mood picks the colour · ${name}`, 3, () => { mood(e, w, row); handle({ t: 'stage', status: 'Speaking...' }); fakeVoice(2.6); });
+    await step('a lewd gesture: the throb builds, peaks, fades', 10.5, () => { handle({ t: 'stage', status: 'Idle' }); mood(0.3, 0.9, 'lewd'); throbAt = clock.elapsedTime; });
+    await step('end of the tour', 1.5);
+  } catch (_) { return; }
+  if (run === tourRun) done();
+}
+
 function debugPanel() {
   const buttons = {
+    'light tour': () => lightTour(buttons['lights on/off']),
+    'lights on/off': () => { const on = !(lights?.enabled ?? lightsCfg(cfg.lights || {}).enabled);
+                             params.delete('lights'); setLights({ ...(cfg.lights || {}), enabled: on }); },
+    throb: () => { if (!lights?.enabled) buttons['lights on/off'](); throbAt = clock.elapsedTime; },
+    flicker: () => lights?.failed(),
     blink: () => { blink.next = 0; },
     twitch: () => twitch(0, 1),
     'left ear': () => twitch(1, 1),
@@ -1350,6 +1412,7 @@ function debugPanel() {
     ['looking', ['you: ahead', 'you: left', 'you: right']],
     ['body', ['left ear', 'twitch', 'wag tail']],
     ['effects', ['glitch', 'holo on/off']],
+    ['light strips (also: her state, mood, clicking her)', ['flicker', 'light tour', 'lights on/off', 'throb']],
     ['emotes', ['anger', 'hearts', 'question', 'sweat drop']],
   ];
   const grouped = new Set(GROUPS.flatMap(([, l]) => l));
@@ -1363,6 +1426,42 @@ function debugPanel() {
     h.style.margin = '6px 0 1px';
     h.textContent = title;
     box.appendChild(h);
+    if (title === 'face and mood' && Array.isArray(cfg.moods) && cfg.moods.length) {
+      // every mood in moods.json, top (lewd) to bottom (grudge): her face, idle
+      // moves and emote as Luna would send them, so touches answer as in that mood
+      const sel = document.createElement('select');
+      sel.style.maxWidth = '100%';
+      sel.add(new Option(`set her mood (${cfg.moods.length})`, ''));
+      let og = null;
+      cfg.moods.forEach((m, i) => {
+        if (!og || og.label !== m.group) { og = document.createElement('optgroup'); og.label = m.group; sel.append(og); }
+        og.append(new Option(m.name, String(i)));
+      });
+      sel.onchange = () => {
+        const m = cfg.moods[+sel.value];
+        if (!m) return;
+        handle({ t: 'mood', label: m.name, row: m.row, energy: m.energy, warmth: m.warmth,
+                 face: m.face, idle: m.idle, emote: m.emote, hold: '', tame: false });
+        if (m.emote) { emoteLast = -99; emote(m.emote); }
+        drawPool();
+      };
+      // what she'd drift into in this mood, and a button to play one of them
+      const pool = document.createElement('div'), one = document.createElement('button');
+      pool.className = 'dim'; pool.style.margin = '3px 0';
+      one.textContent = '▶ play an idle';
+      one.onclick = () => {
+        const { mood, everyday } = idlePool(), all = [...new Set([...mood, ...everyday])];
+        if (all.length) moves.play(all[Math.floor(Math.random() * all.length)]);
+      };
+      const drawPool = () => {
+        const { mood, everyday } = idlePool();
+        pool.textContent = `idles in ${mind.label || moodBand()} (${moodBand()}): ` +
+          `mood ${mood.join(', ') || 'none'} · everyday ${everyday.join(', ') || 'none'}`;
+      };
+      drawPool();
+      setInterval(drawPool, 3000);       // her mood moves on its own too
+      box.append(sel, pool, one);
+    }
     if (title === 'gestures') {
       // one menu, by file name: pick to play, ▶ to play it again
       const sel = document.createElement('select'), again = document.createElement('button');
@@ -1522,16 +1621,24 @@ function pickReaction(table) {
 // Gesture files can say which touches they answer: touch: ['legs'],
 // moods: ['warm', 'loving'], or a row ('lewd', 'grudge') or a mood name
 // (no moods: any). Drop one in and it joins.
-function taggedFor(zone) {
-  const keys = moodKeys();
+function taggedFor(zone, only) {
+  const keys = only ? [only] : moodKeys();
   return Object.keys(GESTURES).filter(n => {
     const g = GESTURES[n];
     if (n.endsWith('_left') || n.startsWith('__') || !Array.isArray(g.touch) || !g.touch.includes(zone)) return false;
     return !Array.isArray(g.moods) || keys.some(k => g.moods.includes(k));
   });
 }
+// The one mood a touch answers from: the table's own (most specific first), else
+// the most specific one a tagged gesture has. Tagged gestures only join for that
+// mood: heated answers the chest from "lewd", so a gesture tagged "loving" stays
+// out, though heated is loving-warm too.
+function touchKey(zone) {
+  return reactionKey(touchCfg.zones?.[zone]) || moodKeys().find(k => taggedFor(zone, k).length) || '';
+}
 function react(r, zone, side) {
-  const gs = [...new Set([...(Array.isArray(r.gestures) ? r.gestures : []), ...taggedFor(zone)])];
+  const tagged = zone ? taggedFor(zone, touchKey(zone)) : [];
+  const gs = [...new Set([...(Array.isArray(r.gestures) ? r.gestures : []), ...tagged])];
   if (gs.length) {
     let g = gs[Math.floor(Math.random() * gs.length)];
     if (side === 'left' && GESTURES[g + '_left']) g += '_left';   // a one-sided gesture: the side you touched
@@ -1543,7 +1650,7 @@ function react(r, zone, side) {
   if (r.emote) emote(r.emote);
   if (r.ears) twitch(0, 1);
 }
-// Spanks. In her top two rows (very warm, lewd) a click on her bum is a
+// Spanks. From warm up (warm, very warm, lewd) a click on her bum is a
 // spank: she flinches (spank_flinch), and her bum reddens - a glow painted
 // over her cheeks that steps up every SPANK_STEP spanks and fades as they're
 // forgotten (one every SPANK_FORGET seconds). Not while a tame stream is live.
@@ -1551,7 +1658,7 @@ function react(r, zone, side) {
 // 60 knocks her mood down a notch.
 const SPANK_STEP = 10, SPANK_FORGET = 10;
 const spank = { n: 0, flash: 0, layers: [], built: false };
-function spankMode() { return !mind.tame && (mind.row === 'lewd' || warmthBand() === 'loving'); }
+function spankMode() { return !mind.tame && (mind.row === 'lewd' || ['warm', 'loving'].includes(warmthBand())); }
 function buildBumBlush() {
   spank.built = true;
   // which vertices are her cheeks: in the hips bone's own frame at rest (from
@@ -1666,7 +1773,7 @@ function touch(zone, side) {
   touched.last = now;
   const tooMuch = touched.recent.length >= (+lim.touches || 5);
   const r = pickReaction(tooMuch ? touchCfg.too_much_reaction : touchCfg.zones?.[zone])
-            || (!tooMuch && taggedFor(zone).length ? {} : null);
+            || (!tooMuch && taggedFor(zone, touchKey(zone)).length ? {} : null);
   if (tooMuch) touched.recent = [];
   if (r) react(r, tooMuch ? '' : zone, side);
 }
@@ -1706,7 +1813,7 @@ if (touchCfg.enabled !== false) {
     hoverTimer = setTimeout(() => {
       const hit = toucher.at(vrm, x, y);
       const table = hit && touchCfg.zones?.[hit.zone];
-      const key = reactionKey(table), tagged = hit ? taggedFor(hit.zone).length : 0;
+      const key = reactionKey(table), tagged = hit ? taggedFor(hit.zone, touchKey(hit.zone)).length : 0;
       if (!params.get('debug')) el.style.cursor = key || tagged ? 'pointer' : '';
       if (tip) {
         tip.textContent = !hit ? '' : `${hit.zone} · ${key || (tagged ? `gestures (${moodBand()})` : `nothing set (${mind.label || moodBand()})`)}`;
