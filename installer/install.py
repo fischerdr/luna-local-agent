@@ -9,8 +9,8 @@ Nothing outside this folder (and kokoro-reader's, next to it) is touched
 without asking first - system packages show the exact command and wait.
 
     --yes                take every default, ask nothing
-    --backend X          lmstudio (default), llama, or skip
-    --voice X            install (default), url:http://host:port, or skip
+    --backend X          lmstudio (default), llama, or skip - or one from backends/
+    --voice X            install (default), url:http://host:port, or skip - or one from backends/
     --gpu X              auto (default), cpu, cuda, rocm - for the voice server
     --extras a,b         wakeword, mcp, portrait, live2d, embeddings, reranker, chat, camera, voices  (or "all")
     --model X            auto (default: picked for your GPU's memory), skip, or a size: 4b, 9b-q4, 9b, 27b...
@@ -41,6 +41,23 @@ EMBED_URL = ("https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main
 RERANK_URL = ("https://huggingface.co/ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF/resolve/main/"
               "qwen3-reranker-0.6b-q8_0.gguf")
 CUBISM_URL = "https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"
+
+# Other places her model and voice can run (backends/<name>/backend.py).
+# Each hook is handed this installer, for ARGS and the helpers below:
+# looked up when used, so ARGS is the parsed one by then.
+sys.path.insert(0, ROOT)
+import backends  # noqa: E402
+
+
+class _Installer:
+    def __getattr__(self, name):
+        try:
+            return globals()[name]
+        except KeyError:
+            raise AttributeError(name) from None
+
+
+INST = _Installer()
 
 EXTRAS = {
     "wakeword": (["openwakeword"], "\"hey Luna\" instead of a key press"),
@@ -235,6 +252,7 @@ def check_system():
     ok(f"Python {v.major}.{v.minor} on {SYSTEM} {platform.machine()}")
     if v >= (3, 14):
         warn("Python 3.14+ is newer than some speech packages support yet - 3.12 is the safe choice")
+    backends.call("check_system", INST)
     gpu, label = detect_gpu()
     ok(f"GPU: {label}")
     free = shutil.disk_usage(ROOT).free // (1 << 30)
@@ -416,11 +434,18 @@ def python_env(state, extras):
 # ---------------------------------------------------------------------------
 def voice(state, gpu_choice):
     step("Her voice (kokoro-reader)")
-    mode = ARGS.voice
+    mode = ARGS.voice or "install"
     if mode == "install" and http_ok("http://127.0.0.1:8899/health") and not state.get("kokoro_dir"):
         ok("a voice server is already answering on :8899 - using that one")
         state["voice"] = {"mode": "external", "url": "http://127.0.0.1:8899"}
         note("voice", True, "existing server on :8899")
+        return
+    others = backends.offered("voices", INST)
+    first = [(k, e["label"]) for k, (_b, e) in others.items() if e.get("default")]
+    if ARGS.voice is None and first:
+        mode = choose("Where should her voice run?", first + [("install", "here, with kokoro-reader")], first[0][0])
+    if mode in others:
+        others[mode][0].voice(INST, state, mode)
         return
     if mode == "skip":
         warn("skipped - she'll be text-only until a TTS server answers on tts.url")
@@ -485,6 +510,10 @@ def voice(state, gpu_choice):
             if not good:
                 warn("couldn't reach PyTorch's own index - the regular build will come from PyPI")
     good = pip(kpy, "-r", os.path.join(server, "requirements.txt"))
+    if not good and ARGS.voice is None:
+        for b in backends.found():
+            if callable(getattr(b, "voice_failed", None)) and b.voice_failed(INST, state):
+                return
     (ok if good else fail)(f"voice server ready ({device})" if good else "voice server packages failed")
     state["kokoro_dir"] = kdir
     state["voice"] = {"mode": "managed", "python": kpy, "server": os.path.join(server, "kokoro_server.py"),
@@ -499,14 +528,20 @@ def voice(state, gpu_choice):
 def backend(state):
     step("Her brain (the model server)")
     choice = ARGS.backend
+    others = backends.offered("backends", INST)
     if choice is None:
         options = [("lmstudio", "LM Studio - an app with a model browser; easiest"),
                    ("llama", "llama.cpp's own server - builds it here, unlocks the research features"),
                    ("skip", "skip - I'll set one up myself")]
         if SYSTEM == "Windows":
             options = [o for o in options if o[0] != "llama"]
-        choice = choose("Which model server?", options, "lmstudio")
+        options[-1:-1] = [(k, e["label"]) for k, (_b, e) in others.items() if e.get("menu")]
+        default = next((k for k, (_b, e) in others.items() if e.get("menu") and e.get("default")), "lmstudio")
+        choice = choose("Which model server?", options, default)
     state["backend"] = choice
+    if choice in others:
+        others[choice][0].backend(INST, state, choice)
+        return
 
     if choice == "lmstudio":
         up = http_ok("http://localhost:1234/v1/models")
@@ -656,10 +691,11 @@ def detect_vram():
     return 0, "no graphics memory found"
 
 
-def pick_model(vram):
-    """The biggest model that fits vram GB (the smallest when nothing does)."""
+def pick_model(vram, reserve=0):
+    """The biggest model that fits vram GB (the smallest when nothing does),
+    with reserve GB kept for what shares the GPU with it."""
     for m in MODELS:
-        if vram >= m[6]:
+        if vram >= m[6] + reserve:
             return m
     return MODELS[-1]
 
@@ -684,6 +720,10 @@ def model(state):
     if choice == "skip" or state.get("backend") == "skip":
         note("model", False, "skipped")
         return
+    other = backends.offered("backends", INST).get(state.get("backend"))
+    if other and not other[1].get("local_model", True):
+        other[0].model(INST, state, None)
+        return
 
     vram, where = detect_vram()
 
@@ -703,10 +743,11 @@ def model(state):
             ok(f"{done[1]} (set up last time; --model <size> picks another)")
             return
 
-    m = _model_by_key(choice) if choice != "auto" else pick_model(vram)
+    reserve = sum(backends.results("gpu_reserve", INST, state))
+    m = _model_by_key(choice) if choice != "auto" else pick_model(vram, reserve)
     if m is None:
         warn(f"no model called {choice} - picking for this machine")
-        m = pick_model(vram)
+        m = pick_model(vram, reserve)
 
     if not ARGS.yes and choice == "auto" and not ARGS.standard:
         uncensored = choose("Uncensored or standard?", [
@@ -717,7 +758,7 @@ def model(state):
 
     key, label, repo, file, size, mmproj, _least, ctx, lms_name = variant(m, uncensored)
     if vram:
-        ok(f"{vram} GB to work with ({where})")
+        ok(f"{vram} GB to work with ({where})" + (f", {reserve:g} GB of it kept for what shares it" if reserve else ""))
     else:
         warn(f"{where} - picking a small model that also runs on the CPU (slower)")
     print(f"  {label}: {size} GB{', with vision' if mmproj else ''}, {ctx // 1024}k context")
@@ -725,9 +766,13 @@ def model(state):
     if not ARGS.yes and choice == "auto":
         rows = [variant(r, uncensored) for r in MODELS]
         options = [(r[0], f"{r[1]} ({r[4]} GB{', sees' if r[5] else ''})"
-                    + (" - too big for this machine" if vram and r[6] > vram else "")) for r in rows]
+                    + (" - too big for this machine" if vram and r[6] + reserve > vram else "")) for r in rows]
         key = choose("Which model?", options, key)
         key, label, repo, file, size, mmproj, _least, ctx, lms_name = variant(_model_by_key(key), uncensored)
+
+    if other:
+        other[0].model(INST, state, dict(key=key, label=label, repo=repo, file=file, mmproj=mmproj, ctx=ctx))
+        return
 
     if state.get("backend") == "llama":
         dest_dir = os.path.join(ROOT, "llama", "models")
@@ -912,6 +957,7 @@ def health(state):
         ok("voice: the launcher starts kokoro-reader with her")
     elif v.get("mode") == "external":
         (ok if http_ok(v["url"] + "/health") else warn)(f"voice: {v['url']}")
+    backends.call("health", INST, state)
 
 
 def summary():
@@ -925,13 +971,12 @@ def summary():
 
 
 # ---------------------------------------------------------------------------
-def main():
-    global ARGS
+def parser():
     ap = argparse.ArgumentParser(description="Install Luna.", formatter_class=argparse.RawDescriptionHelpFormatter,
                                  epilog=__doc__.split("\n\n", 2)[-1])
     ap.add_argument("--yes", "-y", action="store_true")
-    ap.add_argument("--backend", choices=["lmstudio", "llama", "skip"])
-    ap.add_argument("--voice", default="install")
+    ap.add_argument("--backend", choices=["lmstudio", "llama", "skip", *backends.offered("backends", INST)])
+    ap.add_argument("--voice", default=None)
     ap.add_argument("--gpu", default="auto", choices=["auto", "cpu", "cuda", "rocm", "mps"])
     ap.add_argument("--extras", default=None)
     ap.add_argument("--model", default="auto")
@@ -939,9 +984,21 @@ def main():
                     help="Qwen's own release instead of the uncensored (abliterated) one")
     ap.add_argument("--no-system", action="store_true")
     ap.add_argument("--check", action="store_true")
+    backends.call("add_args", ap)
+    return ap
+
+
+def main():
+    global ARGS
+    ap = parser()
     ARGS = ap.parse_args()
+    checked = backends.results("validate", INST, ARGS)
+    for line in (e for errors, _notes in checked for e in errors):
+        ap.error(line)
 
     print(f"{P}Luna - local AI companion - installer{X}  {D}{ROOT}{X}")
+    for line in (n for _errors, notes in checked for n in notes):
+        warn(line)
     state = load_state()
     if ARGS.check:
         health(state)
@@ -976,6 +1033,8 @@ def main():
     backend(state)
     model(state)
     save_state(state)
+    if backends.call("install", INST, state):
+        save_state(state)
     extras_files(extras)
     if py:
         launchers(state)

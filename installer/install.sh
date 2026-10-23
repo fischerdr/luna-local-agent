@@ -16,6 +16,11 @@ pick() {
 }
 
 PY=$(pick)
+# A backends/<name>/python.sh may accept a Python outside 3.10-3.13 (one
+# whose backend brings what the older one was needed for): it sets PY.
+for hook in backends/*/python.sh; do
+    [ -z "$PY" ] && [ -f "$hook" ] && . "$hook"
+done
 if [ -z "$PY" ]; then
     echo "Luna needs Python 3.10-3.13 (3.12 is best) and none was found."
     if command -v dnf >/dev/null; then cmd="sudo dnf install -y python3.12 python3.12-devel"

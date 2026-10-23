@@ -9,6 +9,8 @@ Any arguments are passed on to main.py. Before her:
   server.mac.env on a Mac, by itself. Off with "llm": {"autostart":
   false}, or llm.backend "lmstudio".
 - the voice server, if the installer set one up.
+- whatever a backends/<name>/ folder starts (containers, say), and
+  what it handles isn't started again here.
 
 Each is started only if it isn't already answering, and stopped again
 when she exits - one that was already running before is left alone.
@@ -198,6 +200,26 @@ def start_voice(v):
     return proc
 
 
+def start_backends():
+    """What the backends/ folders start before her (backends/__init__.py):
+    [{"handled": {roles}, "stop": fn}]. A broken one is said and skipped -
+    it never holds her start up."""
+    import backends
+
+    out = []
+    for b in backends.found():
+        if not callable(getattr(b, "start", None)):
+            continue
+        try:
+            got = b.start(settings())
+        except Exception as e:
+            print(f"{b.__name__} didn't start ({e}) - starting without it.", file=sys.stderr)
+            continue
+        if got:
+            out.append({"handled": set(got.get("handled") or ()), "stop": got.get("stop") or (lambda: None)})
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Packages: what installer/requirements.txt asks for, against what's installed
 # ---------------------------------------------------------------------------
@@ -352,18 +374,22 @@ def main():
 
     ensure_packages(py)
     s = state()
-    llama = start_llama(s)
+    started = start_backends()
+    handled = set().union(*(b["handled"] for b in started))
+    llama = None if "chat" in handled else start_llama(s)
     voice = None
     v = s.get("voice", {})
     url = tts_url()
-    if v.get("mode") == "managed" and _here(url):   # a voice on another machine needs nothing started here
+    if "tts" not in handled and v.get("mode") == "managed" and _here(url):   # a voice on another machine needs nothing started here
         voice = start_voice(v)
 
     warnings = []
     if not model_up():
-        warnings.append("No model server - open LM Studio's Local Server, or run llama/start.sh.")
+        warnings.append("Her model is still starting - she'll find it when it's up." if "chat" in handled else
+                        "No model server - open LM Studio's Local Server, or run llama/start.sh.")
     if not (v.get("mode") == "managed" and _here(url)) and v.get("mode") != "none" and not up(url + "/health"):
-        warnings.append(f"No voice server at {url} - she'll start text-only.")
+        warnings.append(f"Her voice is still starting at {url}." if "tts" in handled else
+                        f"No voice server at {url} - she'll start text-only.")
     if warnings:
         print("Starting anyway:\n  " + "\n  ".join(warnings), file=sys.stderr)
 
@@ -379,6 +405,11 @@ def main():
             except subprocess.TimeoutExpired:
                 voice.kill()
         stop_group(llama)
+        for b in started:
+            try:
+                b["stop"]()
+            except Exception as e:
+                print(f"Couldn't stop what a backend started ({e}).", file=sys.stderr)
     sys.exit(code)
 
 

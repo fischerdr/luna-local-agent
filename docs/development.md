@@ -71,6 +71,8 @@ ai-voice/
 ├── thought-viewer/
 │   ├── viewer.py
 │   └── start.sh
+├── backends/         # other places her model and voice can run, a folder each (below)
+│   └── __init__.py   # the loader and its hooks
 ├── plugins/
 │   ├── __init__.py   # the loader
 │   ├── example.py    # template - copy this
@@ -165,6 +167,45 @@ ai-voice/
 ```
 
 ---
+
+# Backends
+
+LM Studio, llama.cpp built here and kokoro-reader are the installer's
+own. Any other place her model or voice can run (containers, a GPU
+server on the network) is a folder of its own, `backends/<name>/`, with
+a `backend.py`. Drop it in and the installer offers it; delete it and
+it's gone. Nothing else names it. That's the same idea as `plugins/`, but
+for the installer and the launcher: Luna herself never loads a backend,
+and only talks to the URLs it set up, as she does with LM Studio's.
+
+Every hook is an optional function in `backend.py`:
+
+| Hook | Called | For |
+|---|---|---|
+| `add_args(ap)` | building the installer's flags | flags of its own |
+| `validate(inst, args)` → `(errors, notes)` | before anything runs | its flags against the others |
+| `check_system(inst)` | "Checking this machine" | a line about what it needs |
+| `backends(inst)` → `[{key, label, menu, default, local_model}]` | `--backend`, and the model-server question | the model servers it offers |
+| `backend(inst, state, key)` | one of them is picked | setting it up |
+| `gpu_reserve(inst, state)` → GB | picking her model | graphics memory kept for what shares the GPU |
+| `model(inst, state, pick)` | after the model pick (`pick` is None if `local_model` is false) | where its backend gets the model |
+| `voices(inst)` → `[{key, label, default}]` | `--voice`, and the voice question | the voices it offers |
+| `voice(inst, state, key)` | one of them is picked | setting it up |
+| `voice_failed(inst, state)` → bool | kokoro-reader's packages didn't install | offering its voice instead |
+| `install(inst, state)` | after her model | the rest of its setup |
+| `health(inst, state)` | the health check | its own lines |
+| `start(settings)` → `{handled, stop}` | `launch.py`, before her | starting its servers; the launcher doesn't start what it handled (`"chat"`, `"tts"`), and calls `stop()` when she exits |
+
+`inst` is the installer, for its flags (`inst.ARGS`) and its helpers
+(`step`, `ok`, `warn`, `ask`, `choose`, `run`, `note`, `set_config`).
+`installer/install.sh` also sources a `backends/<name>/python.sh`, if there
+is one, when it finds no Python 3.10-3.13: it may set `PY` to a newer one
+when its backend brings what the older one was needed for.
+
+A backend that fails to import, or whose `start()` raises, is reported
+and skipped, so it can't stop Luna from installing or starting.
+`backend.py` should import only the standard library at the top.
+`tests/test_backends.py` has a pretend one that uses every hook.
 
 # Tests
 

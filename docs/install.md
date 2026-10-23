@@ -141,6 +141,11 @@ You'll also need PortAudio (`portaudio-devel` / `portaudio19-dev` /
 :8899. Speech isn't synthesized inside Luna: she's a client of that
 server, and stays text-only without it.
 
+Other places for her model and voice, such as containers or a GPU server on your
+network, come as a folder in `backends/`. Each one adds its own choices to
+`--backend` and `--voice`, and brings its own page
+([how they plug in](development.md#backends)).
+
 ---
 
 # Running LM Studio
