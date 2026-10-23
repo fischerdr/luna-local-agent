@@ -134,3 +134,7 @@ services/services.local.env
 deploy/.env
 deploy/api_key
 deploy/hf_token
+
+# The Live2D runtime the installer's live2d extra saves (main ignores
+# portrait/vendor/, but the file lands in portrait/viewer/vendor/)
+portrait/viewer/vendor/live2dcubismcore.min.js
