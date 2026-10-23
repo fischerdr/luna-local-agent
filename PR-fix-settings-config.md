@@ -7,14 +7,14 @@ Branch: `fix/settings-config`, from `main`. Stands alone.
 Typing `/settings` raises an unhandled exception:
 
 ```
-File "main.py", line 580, in handle_input
+File "main.py", line 584, in handle_input
     if not config.MONITOR_ENABLED:
 UnboundLocalError: cannot access local variable 'config' where it is not associated with a value
 ```
 
-`handle_input()` has `import config` inside its `/camera` branch (`main.py:1500`). An import inside a function makes the
+`handle_input()` has `import config` inside its `/camera` branch (`main.py:1504`). An import inside a function makes the
 name local to the whole function, so any use of `config` earlier in `handle_input` fails, at least until `/camera` has
-run once. `/settings` (line 580) is the first command to hit it. `config` is already imported at the top of `main.py`
+run once. `/settings` (line 584) is the first command to hit it. `config` is already imported at the top of `main.py`
 (line 11).
 
 ## The fix
