@@ -8,6 +8,7 @@ scipy>=1.13
 sounddevice>=0.5
 silero-vad>=5.1
 faster-whisper>=1.1
+av>=11,<19              # faster-whisper 1.2 still passes av.open(metadata_errors=), gone in PyAV 19
 prompt_toolkit>=3.0.43
 wcwidth>=0.2.13
 ddgs>=9.0
